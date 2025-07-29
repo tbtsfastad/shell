@@ -1,5 +1,5 @@
 #!/bin/bash
-
+#对风控sdk插件进行重命名：https://github.com/tbtsfastad/bo_risk
 change_name() {
     local NEW_NAME="$1"
     local FILE_SETTINGS="android/settings.gradle"
