@@ -1,5 +1,14 @@
 #!/bin/bash
 #对风控sdk插件进行重命名：https://github.com/tbtsfastad/bo_risk
+
+capitalize_first_sed() {
+    if [ -z "$1" ]; then
+        echo "错误: 未提供任何字符串。" >&2
+        return 1
+    fi
+    echo "$1" | sed 's/./\U&/'
+}
+
 change_name() {
     local NEW_NAME="$1"
     local FILE_SETTINGS="android/settings.gradle"
@@ -7,10 +16,24 @@ change_name() {
     rm "${FILE_SETTINGS}.bak"
     local FILE="pubspec.yaml"
     sed -i.bak "s/^name:.*/name: $NEW_NAME/" "$FILE"
+    local PLUGIN_CLASS_NAME="$(capitalize_first_sed "$NEW_NAME")Plugin"
+    sed -i.bak "s/pluginClass: .*/pluginClass: $PLUGIN_CLASS_NAME/" "$FILE"
     rm "${FILE}.bak"
     local FILE_READ_ME="README.md"
     sed -i.bak "s/bo_risk/$NEW_NAME/" "$FILE_READ_ME"
     rm "${FILE_READ_ME}.bak"
+    local PLUGIN_PROJECT_ROOT="$(pwd)"
+    local PLUGIN_CLASS_FOLDER="$PLUGIN_PROJECT_ROOT/android/src/main/java/com/example/bo_risk"
+    local PLUGIN_CLASS_FILE="$PLUGIN_CLASS_FOLDER/BoRiskPlugin.java"
+    sed -i.bak "s/public class .* implements/public class $PLUGIN_CLASS_NAME implements/" "$PLUGIN_CLASS_FILE"
+    sed -i.bak "s/\"bo_risk\"/\"$NEW_NAME\"/" "$PLUGIN_CLASS_FILE"
+    rm "${PLUGIN_CLASS_FILE}.bak"
+    mv "$PLUGIN_CLASS_FILE" "$PLUGIN_CLASS_FOLDER/$PLUGIN_CLASS_NAME.java"
+    local DART_FILE="lib/bo_risk.dart"
+    sed -i.bak "s/BoRisk/$(capitalize_first_sed "$NEW_NAME")/g" "$DART_FILE"
+    sed -i.bak "s/\'bo_risk\'/\'$NEW_NAME\'/" "$DART_FILE"
+    rm "${DART_FILE}.bak"
+    mv "$DART_FILE" "lib/$NEW_NAME.dart"
 }
 
 change_package() {
@@ -91,6 +114,7 @@ fi
 
 echo "正在重命名请稍候..."
 rm -rf "example"
+rm -rf "ios"
 change_name "$NEW_PLUGIN_NAME"
 change_package "$NEW_BUNDLE_ID"
 
