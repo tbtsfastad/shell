@@ -6,7 +6,8 @@ capitalize_first_sed() {
         echo "错误: 未提供任何字符串。" >&2
         return 1
     fi
-    echo "$1" | sed 's/./\U&/'
+    local str="$1"
+    echo "$(tr '[:lower:]' '[:upper:]' <<< "${str:0:1}")${str:1}"
 }
 
 change_name() {
