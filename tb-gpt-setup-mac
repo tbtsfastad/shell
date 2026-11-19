@@ -30,11 +30,8 @@ case "$action" in
 esac
 
 if [[ "$action" == 1 ]]; then
-  token="${CODEX_RELAY_API_KEY:-}"
-  if [[ -z "$token" ]]; then
-    printf '\n请输入中转站 API Key（输入内容会显示）：' >&2
-    IFS= read -r token || fail '未读取到 API Key。'
-  fi
+  printf '\n请输入中转站 API Key（输入内容会显示）：' >&2
+  IFS= read -r token || fail '未读取到 API Key。'
   if [[ ! "$token" =~ ^[A-Za-z0-9._~+/-]+=*$ ]]; then
     fail 'API Key 为空或含有无效字符。'
   fi

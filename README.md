@@ -26,4 +26,4 @@
 
 默认在用户主目录的 `.codex` 中写入 `config.toml`，并在 `backup-ccexx` 下保存首次安装前的配置。Windows 上默认使用 `%USERPROFILE%\.codex`。如果设置了 `CODEX_HOME`，则使用指定目录。
 
-脚本源码不包含 API Key。运行时可按提示输入，也可预先设置环境变量 `CODEX_RELAY_API_KEY`。安装后，Codex 从本机的 `config.toml` 读取令牌。
+脚本源码不包含 API Key。安装后，Codex 从本机的 `config.toml` 读取令牌。
