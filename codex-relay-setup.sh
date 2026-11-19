@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+
+# Read the entire script before making changes when launched with bash <(curl ...).
+{
+set +x
+set -euo pipefail
+umask 077
+
+fail() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+if [[ $# -ne 0 ]]; then
+  fail '请直接运行脚本，并在菜单中选择操作。'
+fi
+
+printf '%s\n' 'Codex 中转站配置（gpt-6.1-sol）' '1) 安装配置' '9) 恢复安装前的配置' '0) 退出'
+printf '请选择 [1/9/0]：' >&2
+IFS= read -r action || fail '未读取到选项。'
+case "$action" in
+  1|9) ;;
+  0) exit 0 ;;
+  *) fail '请选择 1、9 或 0。' ;;
+esac
+
+if [[ "$action" == 1 ]]; then
+  token="${CODEX_RELAY_API_KEY:-}"
+  if [[ -z "$token" ]]; then
+    printf '请输入中转站 API Key（输入不回显）：' >&2
+    IFS= read -rs token || fail '未读取到 API Key。'
+    printf '\n' >&2
+  fi
+  if [[ ! "$token" =~ ^[A-Za-z0-9._~+/-]+=*$ ]]; then
+    fail 'API Key 为空或含有无效字符。'
+  fi
+fi
+
+codex_dir="${CODEX_HOME:-$HOME/.codex}"
+if [[ "$codex_dir" != /* ]]; then
+  codex_dir="$PWD/$codex_dir"
+fi
+config="$codex_dir/config.toml"
+backup="$codex_dir/backup-ccexx"
+lock="$codex_dir/.ccexx-setup.lock"
+
+mkdir -p "$codex_dir"
+mkdir "$lock" 2>/dev/null || fail "无法锁定配置目录：$lock"
+trap 'rm -f "$lock/config.toml" "$lock/original.toml"; rmdir "$lock"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ -L "$config" || ( -e "$config" && ! -f "$config" ) ]]; then
+  fail "配置路径必须是普通文件：$config"
+fi
+if [[ -L "$backup" || ( -e "$backup" && ! -d "$backup" ) ]]; then
+  fail "备份路径必须是目录：$backup"
+fi
+
+if [[ "$action" == 9 ]]; then
+  if [[ -f "$backup/config.toml" ]]; then
+    cp "$backup/config.toml" "$lock/config.toml"
+    mv -f "$lock/config.toml" "$config"
+    printf '已恢复配置：%s\n' "$config"
+  elif [[ -f "$backup/no-config" ]]; then
+    rm -f "$config"
+    printf '%s\n' '已恢复到安装前没有 config.toml 的状态。'
+  else
+    fail "找不到可用备份：$backup"
+  fi
+  printf '%s\n' '请完全退出并重新打开 Codex。'
+  exit 0
+fi
+
+cat > "$lock/config.toml" <<EOF
+model_provider = "OpenAI"
+model = "gpt-6.1-sol"
+review_model = "gpt-6.1-sol"
+web_search = "live"
+disable_response_storage = true
+network_access = "enabled"
+windows_wsl_setup_acknowledged = true
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://g.ccexx.com/v1"
+model_catalog_url = "https://g.ccexx.com/v1/models"
+wire_api = "responses"
+requires_openai_auth = false
+experimental_bearer_token = "$token"
+http_headers = { "x-openai-actor-authorization" = "local-image-extension" }
+
+[features]
+api_key_model_discovery = true
+image_generation = true
+goals = true
+EOF
+unset token
+
+if [[ ! -f "$backup/config.toml" && ! -f "$backup/no-config" ]]; then
+  mkdir -p "$backup"
+  if [[ -f "$config" ]]; then
+    cp "$config" "$lock/original.toml"
+    mv "$lock/original.toml" "$backup/config.toml"
+  else
+    : > "$backup/no-config"
+  fi
+fi
+
+mv -f "$lock/config.toml" "$config"
+printf '已写入配置：%s\n首次安装前的配置备份：%s\n' "$config" "$backup"
+printf '%s\n' '请完全退出并重新打开 Codex。'
+exit 0
+}
