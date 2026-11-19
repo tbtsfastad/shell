@@ -48,19 +48,8 @@ $tempBackup = Join-Path $backupDir ('.original-{0}.tmp' -f [Guid]::NewGuid())
 if ($choice -eq '1') {
     $token = $env:CODEX_RELAY_API_KEY
     if (-not $token) {
-        $secureToken = Read-Host '请输入中转站 API Key' -AsSecureString
-        try {
-            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
-            try {
-                $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-            }
-            finally {
-                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-            }
-        }
-        finally {
-            $secureToken.Dispose()
-        }
+        Write-Host ''
+        $token = Read-Host '请输入中转站 API Key（输入内容会显示）'
     }
     if ($token -cnotmatch '\A[A-Za-z0-9._~+/-]+=*\z') {
         throw 'API Key 为空或含有无效字符。'
