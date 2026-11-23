@@ -14,9 +14,10 @@ function Stop-InvalidArguments($Message) {
 
 function Get-SdkDirectory {
     if (Test-Path -LiteralPath 'local.properties' -PathType Leaf) {
-        $properties = Get-Content -LiteralPath 'local.properties' -Encoding UTF8 -Raw
-        if ($properties -match '(?m)^[ \t]*sdk\.dir[ \t]*[=:][ \t]*([^\r\n]+)') {
-            return [regex]::Replace($Matches[1], '\\(?:u([0-9a-fA-F]{4})|(.))', {
+        $properties = [string](Get-Content -LiteralPath 'local.properties' -Encoding UTF8 -Raw)
+        $settings = [regex]::Matches($properties, '(?m)^[ \t]*sdk\.dir[ \t]*[=:][ \t]*([^\r\n]*)')
+        if ($settings.Count -gt 0 -and $settings[-1].Groups[1].Value) {
+            return [regex]::Replace($settings[-1].Groups[1].Value, '\\(?:u([0-9a-fA-F]{4})|(.))', {
                 param($Escape)
                 if ($Escape.Groups[1].Success) { return [char][Convert]::ToInt32($Escape.Groups[1].Value, 16) }
                 return $Escape.Groups[2].Value
@@ -37,7 +38,7 @@ function Select-Device($Adb, $Requested) {
         if ($line -notmatch '^(\S+)\t(.+)$') { continue }
         $serial = $Matches[1]
         $state = $Matches[2].Trim()
-        if ($state -eq 'device' -and (!$Requested -or $serial -ceq $Requested)) { return $serial }
+        if ($state -ceq 'device' -and (!$Requested -or $serial -ceq $Requested)) { return $serial }
         if ($serial -ceq $Requested) { $foundState = $state }
     }
     if ($Requested) { throw "设备 $Requested 不可用（$foundState）" }
@@ -49,10 +50,13 @@ function Get-BuiltApk($Variant) {
     $metadata = Join-Path $directory 'output-metadata.json'
     if (!(Test-Path -LiteralPath $metadata -PathType Leaf)) { throw "找不到 APK 构建信息（$metadata）" }
     $data = Get-Content -LiteralPath $metadata -Encoding UTF8 -Raw | ConvertFrom-Json
+    if ($data.elements -isnot [Array]) { throw "APK 构建信息格式无效（$metadata）" }
     if ($data.variantName -cne $Variant) { throw "构建变体为 $($data.variantName)，预期为 $Variant" }
 
-    $artifacts = @($data.elements | Where-Object { $_ })
-    if ($artifacts.Count -ne 1) { $artifacts = @($artifacts | Where-Object { !$_.filters }) }
+    $artifacts = $data.elements
+    if ($artifacts.Count -ne 1) {
+        $artifacts = @($artifacts | Where-Object { $_.filters -is [Array] -and $_.filters.Count -eq 0 })
+    }
     if ($artifacts.Count -ne 1 -or !$artifacts[0].outputFile) { throw '未找到唯一可安装的 APK' }
     $apk = Join-Path $directory $artifacts[0].outputFile
     if (!(Test-Path -LiteralPath $apk -PathType Leaf)) { throw "找不到 Gradle 生成的 APK（$apk）" }
@@ -75,22 +79,26 @@ function Start-App($Adb, $Serial, $Package) {
     $result | Write-Output
 }
 
-if ($args.Count -eq 1 -and $args[0] -eq '--version') { Write-Output "ts-and-cmd $version"; exit 0 }
-if ($args.Count -ge 1 -and $args[0] -in @('-h', '--help')) { Show-Usage; exit 0 }
-if ($args.Count -eq 0 -or $args[0] -ne 'run') { Stop-InvalidArguments '请输入 run 子命令' }
+if ($args.Count -ge 1 -and $args[0] -ceq '--version') {
+    if ($args.Count -ne 1) { Stop-InvalidArguments '--version 不接受其他参数' }
+    Write-Output "ts-and-cmd $version"
+    exit 0
+}
+if ($args.Count -ge 1 -and $args[0] -cin @('-h', '--help')) { Show-Usage; exit 0 }
+if ($args.Count -eq 0 -or $args[0] -cne 'run') { Stop-InvalidArguments '请输入 run 子命令' }
 
 $variant = 'release'
 $task = ':app:assembleRelease'
 $requested = ''
 for ($index = 1; $index -lt $args.Count; $index++) {
     $argument = $args[$index]
-    if ($argument -in @('-h', '--help')) { Show-Usage; exit 0 }
-    if ($argument -eq '--debug') {
+    if ($argument -cin @('-h', '--help')) { Show-Usage; exit 0 }
+    if ($argument -ceq '--debug') {
         $variant = 'debug'
         $task = ':app:assembleDebug'
         continue
     }
-    if ($argument -in @('-d', '--device')) {
+    if ($argument -cin @('-d', '--device')) {
         $index++
         if ($index -ge $args.Count -or $args[$index] -like '-*' -or !$args[$index]) {
             Stop-InvalidArguments '请提供 ADB 设备序列号'
