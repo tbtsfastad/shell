@@ -1,0 +1,164 @@
+#!/bin/bash
+set -o pipefail
+
+version=0.3.0
+
+usage() {
+  printf '%s\n' '用法 ts-and-cmd run [--debug] [设备序列号 | -d 设备序列号]' \
+    '默认构建 Release，选择 adb devices 中第一台可用设备。'
+}
+
+fail() {
+  printf 'ts-and-cmd run: %s\n' "$1" >&2
+  exit 1
+}
+
+argument_error() {
+  printf 'ts-and-cmd: %s\n' "$1" >&2
+  usage >&2
+  exit 2
+}
+
+sdk_directory() {
+  local sdk=''
+  if [[ -f local.properties ]]; then
+    sdk=$(/usr/bin/sed -nE 's/^[[:blank:]]*sdk\.dir[[:blank:]]*[=:][[:blank:]]*//p' local.properties | /usr/bin/tail -n 1) || return 1
+  fi
+  if [[ -n $sdk ]]; then
+    printf '%s' "$sdk" | /usr/bin/perl -CS -pe 's/\\(?:u([0-9a-fA-F]{4})|(.))/defined($1) ? chr(hex($1)) : $2/ge'
+  else
+    printf '%s' "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+  fi
+}
+
+select_device() {
+  local output status serial requested=$1 found='未连接'
+  output=$("$adb" devices) || fail '无法查询 ADB 设备'
+  while IFS=$'\t' read -r serial status; do
+    [[ -n $status ]] || continue
+    status=${status%$'\r'}
+    if [[ -z $requested && $status == device ]] || [[ $serial == "$requested" && $status == device ]]; then
+      printf '%s' "$serial"
+      return
+    fi
+    [[ $serial != "$requested" ]] || found=$status
+  done <<< "$output"
+  if [[ -n $requested ]]; then
+    fail "设备 $requested 不可用（$found）"
+  fi
+  fail "ADB 没有可用设备。$output"
+}
+
+find_apk() {
+  local variant=$1 metadata directory name count index selected=-1
+  directory="app/build/outputs/apk/$variant"
+  metadata="$directory/output-metadata.json"
+  [[ -f $metadata ]] || fail "找不到 APK 构建信息（$metadata）"
+  name=$(/usr/bin/plutil -extract variantName raw -expect string -o - -- "$metadata") || fail "无法读取 $metadata"
+  [[ $name == "$variant" ]] || fail "构建变体为 $name，预期为 $variant"
+  count=$(/usr/bin/plutil -extract elements raw -expect array -o - -- "$metadata") || fail "无法读取 $metadata"
+  if [[ $count == 1 ]]; then
+    selected=0
+  else
+    for ((index = 0; index < count; index++)); do
+      name=$(/usr/bin/plutil -extract "elements.$index.filters" raw -expect array -o - -- "$metadata") || fail "无法读取 $metadata"
+      [[ $name == 0 ]] || continue
+      [[ $selected == -1 ]] || fail '存在多个可安装的 APK'
+      selected=$index
+    done
+  fi
+  [[ $selected != -1 ]] || fail '未找到唯一可安装的 APK'
+  name=$(/usr/bin/plutil -extract "elements.$selected.outputFile" raw -expect string -o - -- "$metadata") || fail "无法读取 $metadata"
+  [[ -f $directory/$name ]] || fail "找不到 Gradle 生成的 APK（$directory/$name）"
+  printf '%s' "$directory/$name"
+}
+
+start_app() {
+  local package=$1 resolved line component='' result activity
+  local intent=(-a android.intent.action.MAIN -c android.intent.category.LAUNCHER)
+  resolved=$("$adb" -s "$selected" shell cmd package resolve-activity --brief --user current "${intent[@]}" -p "$package" 2>&1) ||
+    fail "无法解析 $package 的 Launcher Activity。$resolved"
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    activity=${line#*/}
+    if [[ $line == "$package/"* && $activity =~ ^[[:alnum:]_.$]+$ ]]; then
+      component=$line
+      break
+    fi
+  done <<< "$resolved"
+  [[ -n $component ]] || fail "无法解析 $package 的 Launcher Activity。$resolved"
+
+  printf '启动 %s\n' "$component"
+  result=$("$adb" -s "$selected" shell am start -W --user current "${intent[@]}" -n "'$component'" 2>&1) || fail "$result"
+  printf '%s\n' "$result" | /usr/bin/grep -Eq '^Status: ok[[:space:]]*$' || fail "启动失败。$result"
+  printf '%s\n' "$result"
+}
+
+case ${1:-} in
+  --version) printf 'ts-and-cmd %s\n' "$version"; exit 0 ;;
+  -h|--help) usage; exit 0 ;;
+  run) shift ;;
+  *) argument_error '请输入 run 子命令' ;;
+esac
+
+variant=release
+task=:app:assembleRelease
+requested=''
+while (($#)); do
+  case $1 in
+    -h|--help) usage; exit 0 ;;
+    --debug) variant=debug; task=:app:assembleDebug ;;
+    -d|--device)
+      [[ $# -ge 2 && -n $2 && $2 != -* ]] || argument_error '请提供 ADB 设备序列号'
+      [[ -z $requested ]] || argument_error '设备序列号只能指定一次'
+      requested=$2
+      shift
+      ;;
+    -*) argument_error "未知参数 $1" ;;
+    *)
+      [[ -z $requested && -n $1 ]] || argument_error '请指定一个有效的设备序列号'
+      requested=$1
+      ;;
+  esac
+  shift
+done
+
+[[ -f gradlew ]] || fail '请在包含 gradlew 的 Android 工程根目录运行'
+sdk=$(sdk_directory) || fail '无法读取 local.properties 中的 sdk.dir'
+[[ -d $sdk ]] || fail "找不到 Android SDK（$sdk），请检查 sdk.dir 或 ANDROID_HOME"
+adb="$sdk/platform-tools/adb"
+[[ -x $adb ]] || fail "找不到 adb，请在 $sdk 安装 Android SDK Platform Tools"
+selected=$(select_device "$requested") || exit 1
+
+aapt2=''
+for tool in "$sdk"/build-tools/*/aapt2; do
+  [[ ! -x $tool ]] || aapt2=$tool
+done
+[[ -n $aapt2 ]] || fail "找不到 aapt2，请在 $sdk 安装 Android SDK Build Tools"
+
+export ANDROID_HOME="$sdk"
+[[ -z ${ANDROID_SDK_ROOT+x} ]] || export ANDROID_SDK_ROOT="$sdk"
+if [[ -z ${JAVA_HOME:-} ]]; then
+  java=$(command -v java)
+  if [[ -z $java ]] || { [[ $java == /usr/bin/java ]] && ! /usr/libexec/java_home -F >/dev/null 2>&1; }; then
+    studio_jdk='/Applications/Android Studio.app/Contents/jbr/Contents/Home'
+    [[ -x $studio_jdk/bin/java ]] || fail '找不到可用的 JDK，请设置 JAVA_HOME 指向工程所需的 JDK'
+    export JAVA_HOME="$studio_jdk"
+  fi
+fi
+
+printf '设备 %s，构建 %s\n' "$selected" "$task"
+if [[ -x gradlew ]]; then
+  ./gradlew "$task" || fail 'Gradle 构建失败'
+else
+  /bin/sh ./gradlew "$task" || fail 'Gradle 构建失败'
+fi
+
+apk=$(find_apk "$variant") || exit 1
+badging=$("$aapt2" dump badging "$apk") || fail "无法读取 APK（$apk）"
+package=$(printf '%s\n' "$badging" | /usr/bin/sed -nE "s/^package: name='([A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+)'.*/\1/p")
+[[ -n $package ]] || fail "无法从 APK 读取 applicationId（$apk）"
+
+printf '安装 %s → %s\n' "$package" "$selected"
+"$adb" -s "$selected" install -r "$apk" || fail 'APK 安装失败'
+start_app "$package"
