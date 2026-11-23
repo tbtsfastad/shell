@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+
+
+VERSION = "0.1.0"
+
+
+class CommandError(Exception):
+    pass
+
+
+def run_command(command, *, capture=False, env=None):
+    try:
+        return subprocess.run(
+            command, check=True, text=True, capture_output=capture, env=env
+        )
+    except subprocess.CalledProcessError as error:
+        details = "\n".join(
+            output.strip() for output in (error.stdout, error.stderr) if output
+        )
+        message = f"{Path(command[0]).name} 执行失败，退出码 {error.returncode}"
+        raise CommandError(f"{message}\n{details}" if details else message) from error
+
+
+def sdk_directory(project):
+    properties = project / "local.properties"
+    if properties.is_file():
+        try:
+            contents = properties.read_text(encoding="utf-8")
+        except UnicodeDecodeError as error:
+            raise CommandError(f"无法读取 {properties}，请检查文件编码") from error
+        sdk = re.search(r"^[ \t]*sdk\.dir(?=[ \t=:])[ \t]*(?:[=:][ \t]*)?(.*)$", contents, re.M)
+        if sdk and sdk[1]:
+            directory = re.sub(
+                r"\\(?:u([0-9a-fA-F]{4})|(.))",
+                lambda match: chr(int(match[1], 16)) if match[1] else match[2],
+                sdk[1],
+            )
+            return Path(directory).expanduser().resolve()
+
+    directory = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT")
+    if directory:
+        return Path(directory).expanduser().resolve()
+    return Path.home() / "Library" / "Android" / "sdk"
+
+
+def gradle_environment(sdk):
+    env = {**os.environ, "ANDROID_HOME": str(sdk)}
+    if "ANDROID_SDK_ROOT" in env:
+        env["ANDROID_SDK_ROOT"] = str(sdk)
+    if env.get("JAVA_HOME"):
+        return env
+
+    java = shutil.which("java")
+    if java and java != "/usr/bin/java":
+        return env
+    if java and subprocess.run(["/usr/libexec/java_home", "-F"], capture_output=True).returncode == 0:
+        return env
+
+    studio_jdk = Path("/Applications/Android Studio.app/Contents/jbr/Contents/Home")
+    if not os.access(studio_jdk / "bin" / "java", os.X_OK):
+        raise CommandError("找不到可用的 JDK，请设置 JAVA_HOME 指向工程所需的 JDK")
+    env["JAVA_HOME"] = str(studio_jdk)
+    return env
+
+
+def select_device(adb, requested):
+    output = run_command([adb, "devices"], capture=True).stdout
+    devices = dict(line.split("\t", 1) for line in output.splitlines() if "\t" in line)
+    if requested is not None:
+        state = devices.get(requested, "未连接")
+        if state != "device":
+            raise CommandError(f"设备 {requested} 不可用（{state}）")
+        return requested
+
+    for serial, state in devices.items():
+        if state == "device":
+            return serial
+
+    states = ", ".join(f"{serial} ({state})" for serial, state in devices.items())
+    message = f"ADB 没有可用设备，当前设备 {states}" if states else "ADB 没有可用设备"
+    raise CommandError(message)
+
+
+def aapt2_path(sdk):
+    tools = []
+    for executable in (sdk / "build-tools").glob("*/aapt2"):
+        version = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(.*)", executable.parent.name)
+        if version and executable.is_file() and os.access(executable, os.X_OK):
+            order = (not version[4], *(int(part) for part in version.group(1, 2, 3)))
+            tools.append((order, executable))
+    if not tools:
+        raise CommandError(f"找不到 aapt2，请在 {sdk} 安装 Android SDK Build Tools")
+    return max(tools, key=lambda tool: tool[0])[1]
+
+
+def built_apk(project, variant):
+    directory = project / "app" / "build" / "outputs" / "apk" / variant
+    metadata = directory / "output-metadata.json"
+    try:
+        details = json.loads(metadata.read_text(encoding="utf-8"))
+        if details["variantName"] != variant:
+            raise ValueError(f"构建变体为 {details['variantName']}，预期为 {variant}")
+        outputs = details["elements"]
+        if len(outputs) != 1:
+            outputs = [output for output in outputs if not output["filters"]]
+        if len(outputs) != 1:
+            raise ValueError("未找到唯一可安装的 APK")
+        apk = directory / outputs[0]["outputFile"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise CommandError(f"无法从 {metadata} 定位 APK\n{error}") from error
+
+    if not apk.is_file():
+        raise CommandError(f"找不到 Gradle 生成的 APK（{apk}）")
+    return apk
+
+
+def application_id(aapt2, apk):
+    output = run_command([aapt2, "dump", "badging", apk], capture=True).stdout
+    package = re.search(r"^package: name='([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+)'", output, re.M)
+    if not package:
+        raise CommandError(f"无法从 APK 读取 applicationId（{apk}）")
+    return package[1]
+
+
+def start_app(adb, package):
+    launcher_intent = [
+        "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER"
+    ]
+    try:
+        resolved = run_command(
+            [*adb, "shell", "cmd", "package", "resolve-activity", "--brief",
+             "--user", "current", *launcher_intent, "-p", package],
+            capture=True,
+        ).stdout
+    except CommandError as error:
+        raise CommandError(f"无法解析 {package} 的 Launcher Activity\n{error}") from error
+
+    component_pattern = re.compile(rf"{re.escape(package)}/[^\s/]+")
+    component = next((line for line in resolved.splitlines() if component_pattern.fullmatch(line)), None)
+    if not component:
+        raise CommandError(f"无法解析 {package} 的 Launcher Activity\n{resolved.strip()}")
+
+    print(f"启动 {component}", flush=True)
+    result = run_command(
+        [*adb, "shell", "am", "start", "-W", "--user", "current",
+         *launcher_intent, "-n", shlex.quote(component)],
+        capture=True,
+    )
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    if not re.search(r"^Status: ok\s*$", output, re.M):
+        raise CommandError(f"启动 {component} 失败\n{output}")
+    print(output)
+
+
+def run_app(debug, device):
+    project = Path.cwd()
+    wrapper = project / "gradlew"
+    if not wrapper.is_file():
+        raise CommandError("请在包含 gradlew 的 Android 工程根目录运行")
+
+    sdk = sdk_directory(project)
+    if not sdk.is_dir():
+        raise CommandError(f"找不到 Android SDK（{sdk}），请检查 sdk.dir 或 ANDROID_HOME")
+    adb = sdk / "platform-tools" / "adb"
+    if not adb.is_file() or not os.access(adb, os.X_OK):
+        raise CommandError(f"找不到 adb，请在 {sdk} 安装 Android SDK Platform Tools")
+    selected = select_device(adb, device)
+    aapt2 = aapt2_path(sdk)
+
+    variant = "debug" if debug else "release"
+    task = f":app:assemble{variant.capitalize()}"
+    gradle = [wrapper] if os.access(wrapper, os.X_OK) else ["/bin/sh", wrapper]
+    env = gradle_environment(sdk)
+    print(f"设备 {selected}，构建 {task}", flush=True)
+    run_command([*gradle, task], env=env)
+
+    apk = built_apk(project, variant)
+    package = application_id(aapt2, apk)
+    target = [adb, "-s", selected]
+    print(f"安装 {package} → {selected}", flush=True)
+    run_command([*target, "install", "-r", apk])
+    start_app(target, package)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="ts-and-cmd", description="Android 工程命令行工具", allow_abbrev=False
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    commands = parser.add_subparsers(dest="command", required=True)
+    run = commands.add_parser("run", help="编译、安装并启动 Android App", allow_abbrev=False)
+    devices = run.add_mutually_exclusive_group()
+    devices.add_argument("serial", nargs="?", help="ADB 设备序列号")
+    devices.add_argument("-d", "--device", help="ADB 设备序列号")
+    run.add_argument("--debug", action="store_true", help="构建 Debug（默认 Release）")
+    args = parser.parse_args()
+    try:
+        if args.command == "run":
+            if "" in (args.serial, args.device):
+                run.error("设备序列号不能为空")
+            run_app(args.debug, args.device if args.device is not None else args.serial)
+    except (CommandError, OSError) as error:
+        print(f"{parser.prog} {args.command}: {error}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
