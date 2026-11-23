@@ -7,7 +7,7 @@
 ### macOS
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tbtsfastad/shell/main/ts-and-cmd-setup-mac | /bin/bash
+curl -fsSL https://raw.githubusercontent.com/tbtsfastad/shell/refs/heads/main/ts-and-cmd-setup-mac | /bin/bash
 ```
 
 安装后重新打开终端。

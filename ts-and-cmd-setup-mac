@@ -4,7 +4,7 @@ set -eu
 command_url='https://raw.githubusercontent.com/tbtsfastad/shell/main/ts-and-cmd-mac'
 # Update the checksum in the same commit as changes to ts-and-cmd-mac.
 command_sha256='9144a372caed872c15f429b6935520d0be23dd1e24a71a22b33f624a4787e939'
-path_setting='case "$PATH:" in "$HOME/.local/bin:"*) ;; *) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+path_setting='case "$PATH:" in "$HOME/.local/share/ts-and-cmd/bin:"*) ;; *) export PATH="$HOME/.local/share/ts-and-cmd/bin:$PATH" ;; esac'
 
 fail() {
   printf 'ts-and-cmd-setup-mac: %s\n' "$1" >&2
@@ -26,35 +26,18 @@ case ${shell##*/} in
   *) fail "安装需要 macOS 的 zsh 或 Bash，当前 shell 为 $shell" ;;
 esac
 
-destination="$HOME/.local/bin/ts-and-cmd"
+install_root="$HOME/.local/share/ts-and-cmd"
+destination="$install_root/bin/ts-and-cmd"
 mkdir -p -- "${destination%/*}"
-staging=$(mktemp -d "${destination%/*}/.ts-and-cmd.XXXXXX")
-install_lock="${destination%/*}/.ts-and-cmd-install.lock"
-held_lock=''
-cleanup() {
-  if [[ -n $held_lock ]]; then
-    rmdir -- "$held_lock" || true
-  fi
-  rm -rf -- "$staging"
-}
-trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+staging="$install_root/.installing"
+mkdir -- "$staging" || fail "无法创建安装目录（${staging}）"
+trap 'rm -f -- "$staging/ts-and-cmd"; rmdir -- "$staging"' EXIT
+trap 'exit 1' HUP INT TERM
 
 /usr/bin/curl -fsSL "$command_url" -o "$staging/ts-and-cmd" || fail '下载 ts-and-cmd 失败'
 checksum=$(/usr/bin/shasum -a 256 "$staging/ts-and-cmd")
 [[ ${checksum%% *} == "$command_sha256" ]] || fail 'ts-and-cmd 下载文件的校验值不匹配，请重新运行安装命令'
 chmod 755 "$staging/ts-and-cmd"
-
-attempt=0
-while ! mkdir -- "$install_lock" 2>/dev/null; do
-  [[ ! -e $install_lock || -d $install_lock ]] || fail "无法创建安装锁（${install_lock}）"
-  [[ $attempt -lt 100 ]] || fail '已有安装程序在运行，请稍后重试'
-  attempt=$((attempt + 1))
-  sleep 0.1
-done
-held_lock=$install_lock
 
 [[ ! -d $destination ]] || fail "目标路径是目录（${destination}）"
 : >> "$profile" || fail "无法写入 shell 配置（${profile}）"
