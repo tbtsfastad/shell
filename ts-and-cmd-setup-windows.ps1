@@ -38,6 +38,7 @@ exit /b %ERRORLEVEL%
     if ($userPath -cne $installedPath) { [Environment]::SetEnvironmentVariable('Path', $installedPath, 'User') }
     $env:Path = Add-CommandDirectory $env:Path $bin
     Write-Host "已安装 $(Join-Path $bin 'ts-and-cmd.cmd') 并配置用户 PATH"
+    Write-Host '当前 PowerShell 窗口可直接使用。安装前已打开的其他终端窗口请重新打开。'
 } finally {
     Remove-Item -LiteralPath $staging.FullName -Recurse -Force
 }

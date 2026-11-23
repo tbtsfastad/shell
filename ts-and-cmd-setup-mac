@@ -51,3 +51,4 @@ else
 fi
 
 printf '已安装 %s\n已配置 %s\n' "$destination" "$profile"
+printf '%s\n' '请重新打开终端窗口。'
