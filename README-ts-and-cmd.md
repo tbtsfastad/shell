@@ -7,23 +7,17 @@
 ### macOS
 
 ```sh
-( ts_setup="$(curl -fsSL 'https://raw.githubusercontent.com/tbtsfastad/shell/main/ts-and-cmd-setup-mac')" &&
-  /bin/bash -c "$ts_setup" ) && export PATH="$HOME/.local/bin:$PATH"
+curl -fsSL https://raw.githubusercontent.com/tbtsfastad/shell/main/ts-and-cmd-setup-mac | /bin/bash
 ```
+
+安装后重新打开终端。
 
 ### Windows
 
 在 PowerShell 中执行。
 
 ```powershell
-$tsSetup = [IO.Path]::GetTempFileName()
-try {
-    curl.exe -fsSL 'https://raw.githubusercontent.com/tbtsfastad/shell/main/ts-and-cmd-setup-windows.ps1' -o $tsSetup
-    if ($LASTEXITCODE -ne 0) { throw '下载安装脚本失败' }
-    & ([scriptblock]::Create([IO.File]::ReadAllText($tsSetup)))
-} finally {
-    Remove-Item -LiteralPath $tsSetup -Force
-}
+& ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop 'https://raw.githubusercontent.com/tbtsfastad/shell/main/ts-and-cmd-setup-windows.ps1')))
 ```
 
 ## 使用
