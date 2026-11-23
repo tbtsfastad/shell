@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -8,13 +9,51 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
+
+PATH_SETTING = (
+    b'case "$PATH:" in "$HOME/.local/bin:"*) ;; '
+    b'*) export PATH="$HOME/.local/bin:$PATH" ;; esac'
+)
 
 
 class CommandError(Exception):
     pass
+
+
+def shell_startup_file(home):
+    shell = Path(os.environ.get("SHELL") or "/bin/zsh").name
+    if shell == "zsh":
+        return Path(os.environ.get("ZDOTDIR") or home) / ".zshrc"
+    if shell == "bash":
+        profiles = [home / name for name in (".bash_profile", ".bash_login", ".profile")]
+        return next((profile for profile in profiles if profile.is_file()), profiles[0])
+    raise CommandError(f"安装需要 macOS 的 zsh 或 Bash，当前 shell 为 {shell}")
+
+
+def install_command():
+    home = Path.home()
+    profile = shell_startup_file(home)
+    destination = home / ".local" / "bin" / "ts-and-cmd"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(dir=destination.parent) as staging:
+        executable = Path(staging) / destination.name
+        shutil.copyfile(Path(__file__).resolve(), executable)
+        executable.chmod(0o755)
+        executable.replace(destination)
+
+    with profile.open("a+b") as config:
+        fcntl.flock(config, fcntl.LOCK_EX)
+        config.seek(0)
+        if PATH_SETTING not in config.read().splitlines():
+            config.write(b"\n# ts-and-cmd\n" + PATH_SETTING + b"\n")
+
+    print(f"已安装 {destination}")
+    print(f"已配置 {profile}，打开新终端即可运行 ts-and-cmd")
 
 
 def run_command(command, *, capture=False, env=None):
@@ -197,6 +236,7 @@ def main():
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("install", help="安装命令并配置 shell PATH", allow_abbrev=False)
     run = commands.add_parser("run", help="编译、安装并启动 Android App", allow_abbrev=False)
     devices = run.add_mutually_exclusive_group()
     devices.add_argument("serial", nargs="?", help="ADB 设备序列号")
@@ -204,7 +244,9 @@ def main():
     run.add_argument("--debug", action="store_true", help="构建 Debug（默认 Release）")
     args = parser.parse_args()
     try:
-        if args.command == "run":
+        if args.command == "install":
+            install_command()
+        elif args.command == "run":
             if "" in (args.serial, args.device):
                 run.error("设备序列号不能为空")
             run_app(args.debug, args.device if args.device is not None else args.serial)
