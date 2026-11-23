@@ -29,22 +29,42 @@ esac
 destination="$HOME/.local/bin/ts-and-cmd"
 mkdir -p -- "${destination%/*}"
 staging=$(mktemp -d "${destination%/*}/.ts-and-cmd.XXXXXX")
-trap 'rm -rf -- "$staging"' EXIT
+install_lock="${destination%/*}/.ts-and-cmd-install.lock"
+held_lock=''
+cleanup() {
+  if [[ -n $held_lock ]]; then
+    rmdir -- "$held_lock" || true
+  fi
+  rm -rf -- "$staging"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 /usr/bin/curl -fsSL "$command_url" -o "$staging/ts-and-cmd" || fail '下载 ts-and-cmd 失败'
 checksum=$(/usr/bin/shasum -a 256 "$staging/ts-and-cmd")
 [[ ${checksum%% *} == "$command_sha256" ]] || fail 'ts-and-cmd 下载文件的校验值不匹配，请重新运行安装命令'
 chmod 755 "$staging/ts-and-cmd"
 
-/usr/bin/lockf -k -t 10 "$profile" /bin/bash -ec '
-  if [[ -d $2 ]]; then
-    printf "目标路径是目录（%s）\n" "$2" >&2
-    exit 1
-  fi
-  mv -f -- "$1" "$2"
-  if ! /usr/bin/grep -Fxq -- "$4" "$3"; then
-    printf "\n# ts-and-cmd\n%s\n" "$4" >> "$3"
-  fi
-' bash "$staging/ts-and-cmd" "$destination" "$profile" "$path_setting" || fail "无法写入 $destination 或 $profile"
+attempt=0
+while ! mkdir -- "$install_lock" 2>/dev/null; do
+  [[ ! -e $install_lock || -d $install_lock ]] || fail "无法创建安装锁（${install_lock}）"
+  [[ $attempt -lt 100 ]] || fail '已有安装程序在运行，请稍后重试'
+  attempt=$((attempt + 1))
+  sleep 0.1
+done
+held_lock=$install_lock
+
+[[ ! -d $destination ]] || fail "目标路径是目录（${destination}）"
+: >> "$profile" || fail "无法写入 shell 配置（${profile}）"
+mv -f -- "$staging/ts-and-cmd" "$destination" || fail "无法安装到 $destination"
+if /usr/bin/grep -Fxq -- "$path_setting" "$profile"; then
+  :
+elif [[ $? == 1 ]]; then
+  printf '\n# ts-and-cmd\n%s\n' "$path_setting" >> "$profile" || fail "无法写入 shell 配置（${profile}）"
+else
+  fail "无法读取 shell 配置（${profile}）"
+fi
 
 printf '已安装 %s\n已配置 %s\n' "$destination" "$profile"
