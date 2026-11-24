@@ -6,7 +6,7 @@ version=0.3.0
 usage() {
   printf '%s\n' '用法 ts-and-cmd run [--debug] [设备序列号 | -d 设备序列号]' \
     '默认构建 Release，选择 adb devices 中第一台可用设备。' \
-    '启动后持续输出应用日志，按 Ctrl+C 停止查看。'
+    '启动后持续输出应用日志。按 q 退出 App，按 Ctrl+C 仅停止查看。'
 }
 
 fail() {
@@ -196,5 +196,34 @@ start_app "$package"
 
 filter=$(app_log_filter "$package") || exit 1
 if [[ $log_start =~ ^[0-9]+$ ]]; then log_start="${log_start}.000"; else log_start=1; fi
-printf '正在输出 %s 的日志，按 Ctrl+C 停止查看。\n' "$package"
-exec "$adb" -s "$selected" logcat -v threadtime -T "$log_start" "$filter"
+log_args=(-s "$selected" logcat -v threadtime -T "$log_start" "$filter")
+if [[ ! -t 0 ]] || ! terminal_state=$(/bin/stty -g 2>/dev/null); then
+  printf '正在输出 %s 的日志，按 Ctrl+C 停止查看。\n' "$package"
+  exec "$adb" "${log_args[@]}"
+fi
+
+printf '正在输出 %s 的日志。按 q 退出 App，按 Ctrl+C 仅停止查看。\n' "$package"
+"$adb" "${log_args[@]}" </dev/null &
+log_pid=$!
+trap '
+  /bin/stty "$terminal_state" 2>/dev/null
+  if [[ -n $log_pid ]]; then
+    kill "$log_pid" 2>/dev/null
+    wait "$log_pid" 2>/dev/null
+  fi
+' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+while kill -0 "$log_pid" 2>/dev/null; do
+  if IFS= read -rsn 1 -t 1 key && [[ $key == q ]]; then
+    "$adb" -s "$selected" shell am force-stop --user current "$package" || fail "无法退出 $package"
+    exit 0
+  fi
+done
+
+wait "$log_pid"
+log_status=$?
+log_pid=''
+exit "$log_status"

@@ -31,4 +31,4 @@ ts-and-cmd run --debug -d xxxx  # Debug，指定设备
 ts-and-cmd run --help           # 查看用法
 ```
 
-App 启动后会持续输出应用日志。按 `Ctrl+C` 停止查看，App 继续运行。
+App 启动后会持续输出应用日志。按 `q` 停止日志并退出 App，无需回车。按 `Ctrl+C` 只停止查看日志，App 继续运行。

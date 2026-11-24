@@ -4,7 +4,7 @@ $version = '0.3.0'
 function Show-Usage {
     Write-Host '用法 ts-and-cmd run [--debug] [设备序列号 | -d 设备序列号]'
     Write-Host '默认构建 Release，选择 adb devices 中第一台可用设备。'
-    Write-Host '启动后持续输出应用日志，按 Ctrl+C 停止查看。'
+    Write-Host '启动后持续输出应用日志。按 q 退出 App，按 Ctrl+C 仅停止查看。'
 }
 
 function Stop-InvalidArguments($Message) {
@@ -179,11 +179,45 @@ try {
 
     $filter = Get-AppLogFilter $adb $serial $package
     $logStart = if ($logStart -match '^[0-9]+$') { "${logStart}.000" } else { '1' }
-    Write-Host "正在输出 $Package 的日志，按 Ctrl+C 停止查看。"
 } catch {
     [Console]::Error.WriteLine("ts-and-cmd run: $($_.Exception.Message)")
     exit 1
 }
 
-& $adb -s $serial logcat -v threadtime -T $logStart $filter
-exit $LASTEXITCODE
+$logArgs = @('-s', $serial, 'logcat', '-v', 'threadtime', '-T', $logStart, $filter)
+if ([Console]::IsInputRedirected) {
+    Write-Host "正在输出 $package 的日志，按 Ctrl+C 停止查看。"
+    & $adb @logArgs
+    exit $LASTEXITCODE
+}
+
+Write-Host "正在输出 $package 的日志。按 q 退出 App，按 Ctrl+C 仅停止查看。"
+$logProcess = $null
+$controlCMode = [Console]::TreatControlCAsInput
+try {
+    [Console]::TreatControlCAsInput = $true
+    $logProcess = Start-Process -FilePath $adb -ArgumentList $logArgs -NoNewWindow -PassThru
+    while (!$logProcess.HasExited) {
+        if (![Console]::KeyAvailable) {
+            Start-Sleep -Milliseconds 100
+            continue
+        }
+        $key = [Console]::ReadKey($true).KeyChar
+        if ($key -eq [char]3) { exit 130 }
+        if ($key -ceq 'q') {
+            & $adb -s $serial shell am force-stop --user current $package
+            if ($LASTEXITCODE -ne 0) { throw "无法退出 $package" }
+            exit 0
+        }
+    }
+    exit $logProcess.ExitCode
+} catch {
+    [Console]::Error.WriteLine("ts-and-cmd run: $($_.Exception.Message)")
+    exit 1
+} finally {
+    [Console]::TreatControlCAsInput = $controlCMode
+    if ($logProcess) {
+        if (!$logProcess.HasExited) { Stop-Process -InputObject $logProcess -ErrorAction SilentlyContinue }
+        $logProcess.Dispose()
+    }
+}
