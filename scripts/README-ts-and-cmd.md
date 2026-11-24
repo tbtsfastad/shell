@@ -7,7 +7,7 @@
 ### macOS
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/tbtsfastad/shell/refs/heads/main/ts-and-cmd-setup-mac | /bin/bash
+curl -fsSL https://raw.githubusercontent.com/tbtsfastad/shell/refs/heads/main/scripts/ts-and-cmd-setup-mac | /bin/bash
 ```
 
 安装后重新打开终端。
@@ -17,7 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/tbtsfastad/shell/refs/heads/main/ts
 在 PowerShell 中执行。
 
 ```powershell
-& ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop 'https://raw.githubusercontent.com/tbtsfastad/shell/main/ts-and-cmd-setup-windows.ps1')))
+& ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop 'https://raw.githubusercontent.com/tbtsfastad/shell/main/scripts/ts-and-cmd-setup-windows.ps1')))
 ```
 
 ## 使用
