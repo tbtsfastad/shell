@@ -5,7 +5,8 @@ version=0.3.0
 
 usage() {
   printf '%s\n' '用法 ts-and-cmd run [--debug] [设备序列号 | -d 设备序列号]' \
-    '默认构建 Release，选择 adb devices 中第一台可用设备。'
+    '默认构建 Release，选择 adb devices 中第一台可用设备。' \
+    '启动后持续输出应用日志，按 Ctrl+C 停止查看。'
 }
 
 fail() {
@@ -96,6 +97,28 @@ start_app() {
   printf '%s\n' "$result"
 }
 
+app_log_filter() {
+  local package=$1 help packages name uid app_pid
+  help=$("$adb" -s "$selected" logcat --help) || fail '无法查询 logcat 参数'
+  if [[ $help == *--uid=* ]]; then
+    packages=$("$adb" -s "$selected" shell cmd package list packages -U --user current "$package") ||
+      fail "无法查询 $package 的应用 UID"
+    while read -r name uid _; do
+      uid=${uid%$'\r'}
+      if [[ $name == "package:$package" && $uid =~ ^uid:[0-9]+$ ]]; then
+        printf '%s' "--uid=${uid#uid:}"
+        return
+      fi
+    done <<< "$packages"
+    fail "找不到 $package 的应用 UID"
+  fi
+
+  app_pid=$("$adb" -s "$selected" shell pidof -s "$package") || fail "找不到 $package 的应用进程"
+  app_pid=${app_pid%$'\r'}
+  [[ $app_pid =~ ^[1-9][0-9]*$ ]] || fail "找不到 $package 的应用进程"
+  printf '%s' "--pid=$app_pid"
+}
+
 case ${1:-} in
   --version)
     [[ $# == 1 ]] || argument_error '--version 不接受其他参数'
@@ -167,4 +190,11 @@ package=$(printf '%s\n' "$badging" | /usr/bin/sed -nE "s/^package: name='([A-Za-
 
 printf '安装 %s → %s\n' "$package" "$selected"
 "$adb" -s "$selected" install -r "$apk" || fail 'APK 安装失败'
+log_start=$("$adb" -s "$selected" shell date +%s) || log_start=''
+log_start=${log_start%$'\r'}
 start_app "$package"
+
+filter=$(app_log_filter "$package") || exit 1
+if [[ $log_start =~ ^[0-9]+$ ]]; then log_start="${log_start}.000"; else log_start=1; fi
+printf '正在输出 %s 的日志，按 Ctrl+C 停止查看。\n' "$package"
+exec "$adb" -s "$selected" logcat -v threadtime -T "$log_start" "$filter"

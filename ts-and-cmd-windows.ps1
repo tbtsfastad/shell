@@ -4,6 +4,7 @@ $version = '0.3.0'
 function Show-Usage {
     Write-Host '用法 ts-and-cmd run [--debug] [设备序列号 | -d 设备序列号]'
     Write-Host '默认构建 Release，选择 adb devices 中第一台可用设备。'
+    Write-Host '启动后持续输出应用日志，按 Ctrl+C 停止查看。'
 }
 
 function Stop-InvalidArguments($Message) {
@@ -79,6 +80,27 @@ function Start-App($Adb, $Serial, $Package) {
     $result | Write-Output
 }
 
+function Get-AppLogFilter($Adb, $Serial, $Package) {
+    $helpText = (& $Adb -s $Serial logcat --help) -join "`n"
+    if ($LASTEXITCODE -ne 0) { throw '无法查询 logcat 参数' }
+    if ($helpText.Contains('--uid=')) {
+        $packages = & $Adb -s $Serial shell cmd package list packages -U --user current $Package
+        if ($LASTEXITCODE -ne 0) { throw "无法查询 $Package 的应用 UID" }
+        foreach ($line in $packages) {
+            if ($line -cmatch ('^package:{0}\s+uid:([0-9]+)\s*$' -f [regex]::Escape($Package))) {
+                return "--uid=$($Matches[1])"
+            }
+        }
+        throw "找不到 $Package 的应用 UID"
+    }
+
+    $appPid = (& $Adb -s $Serial shell pidof -s $Package) -join ''
+    if ($LASTEXITCODE -ne 0 -or $appPid -notmatch '^[1-9][0-9]*$') {
+        throw "找不到 $Package 的应用进程"
+    }
+    return "--pid=$appPid"
+}
+
 if ($args.Count -ge 1 -and $args[0] -ceq '--version') {
     if ($args.Count -ne 1) { Stop-InvalidArguments '--version 不接受其他参数' }
     Write-Output "ts-and-cmd $version"
@@ -151,8 +173,17 @@ try {
     Write-Host "安装 $package → $serial"
     & $adb -s $serial install -r $apk
     if ($LASTEXITCODE -ne 0) { throw "APK 安装失败（退出码 $LASTEXITCODE）" }
+    $logStart = (& $adb -s $serial shell date +%s) -join ''
+    if ($LASTEXITCODE -ne 0) { $logStart = '' }
     Start-App $adb $serial $package
+
+    $filter = Get-AppLogFilter $adb $serial $package
+    $logStart = if ($logStart -match '^[0-9]+$') { "${logStart}.000" } else { '1' }
+    Write-Host "正在输出 $Package 的日志，按 Ctrl+C 停止查看。"
 } catch {
     [Console]::Error.WriteLine("ts-and-cmd run: $($_.Exception.Message)")
     exit 1
 }
+
+& $adb -s $serial logcat -v threadtime -T $logStart $filter
+exit $LASTEXITCODE

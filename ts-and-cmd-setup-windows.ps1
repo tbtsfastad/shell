@@ -1,7 +1,7 @@
 ﻿$ErrorActionPreference = 'Stop'
 $commandUrl = 'https://raw.githubusercontent.com/tbtsfastad/shell/main/ts-and-cmd-windows.ps1'
 # Update the checksum in the same commit as changes to ts-and-cmd-windows.ps1.
-$commandSha256 = '7a607b68aae838b008ccb833e0019fb62927f7dd81e11eafa5483fa799837599'
+$commandSha256 = 'c7f612d89f34ac6392b6b46473a4e426442a0bb7a3c88c04322f246b3a7f0a3f'
 
 function Add-CommandDirectory([string]$PathValue, [string]$Directory) {
     $entries = @($PathValue -split ';' | Where-Object {
