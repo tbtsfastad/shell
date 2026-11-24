@@ -5,10 +5,7 @@
 打开 macOS 的「终端」，复制并运行：
 
 ```bash
-case "$(/bin/bash <(/usr/bin/curl -fsSL https://raw.githubusercontent.com/tbtsfastad/shell/main/codex-setup-mac) --report-selection)" in
-  1) unset HY4_API_KEY KIMI_API_KEY ;;
-  2) unset HY4_API_KEY; export KIMI_API_KEY="$(/bin/launchctl getenv KIMI_API_KEY)" ;;
-esac
+/bin/bash <(/usr/bin/curl -fsSL https://raw.githubusercontent.com/tbtsfastad/shell/main/codex-setup-mac)
 ```
 
 ## Windows
@@ -39,8 +36,6 @@ esac
 
 配置和备份默认保存在用户主目录的 `.codex` 中。设置了 `CODEX_HOME` 时使用指定目录。统一脚本的备份在 `backup-codex-setup/` 下。
 
-配置成功后会清理旧的 `HY4_API_KEY`。切换到 TB-GPT 时，也会清理 `KIMI_API_KEY` 并将 TB-GPT 的 Key 写入本机配置。切换到 Kimi 时，会将 `KIMI_API_KEY` 更新为本次输入的 Key。
+脚本在配置时读取 API Key。TB-GPT 的 Key 写入本机配置，Kimi 的 Key 由环境变量提供。恢复仅还原配置文件。如果备份依赖环境变量，请确认对应变量仍可用。
 
-macOS 命令同时更新当前终端和登录会话变量。Windows 脚本更新当前 PowerShell 和用户环境变量。其他已打开的终端仍持有各自的变量，Shell 启动文件里的 `export` 也会在新终端重新执行。
-
-恢复只还原配置文件。如果恢复后的配置依赖已清理的环境变量，需要重新设置对应的 Key。
+在 macOS 上使用 Kimi 的 Codex CLI，请先执行脚本末尾显示的 `export` 命令。重新登录 macOS 后，需重新设置 Key。Windows 上可在新的 PowerShell 窗口启动 Codex CLI。
