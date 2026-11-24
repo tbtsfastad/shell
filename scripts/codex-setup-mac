@@ -36,22 +36,6 @@ case "$action" in
   *) fail '请选择 1、2 或 3。' ;;
 esac
 
-if [[ "$action" == 1 ]]; then
-  printf '\n%s\n' '请选择服务商' '1) TB-GPT' '2) Kimi' '0) 退出'
-  printf '请选择 [1/2/0]：' >&2
-  IFS= read -r selection || fail '未读取到选项。'
-  case "$selection" in
-    1)
-      selection_name="TB-GPT"
-      ;;
-    2)
-      selection_name="Kimi"
-      ;;
-    0) exit 0 ;;
-    *) fail '请选择 1、2 或 0。' ;;
-  esac
-fi
-
 codex_dir="${CODEX_HOME:-$HOME/.codex}"
 if [[ "$codex_dir" != /* ]]; then
   codex_dir="$PWD/$codex_dir"
@@ -66,7 +50,7 @@ elif [[ ! -d "$codex_dir" ]]; then
   fail "找不到可用备份：$backup"
 fi
 mkdir "$lock" 2>/dev/null || fail "无法锁定配置目录：$lock"
-trap 'rm -f "$lock/config.toml" "$lock/original.toml" "$lock/kimi-models.json"; rmdir "$lock"' EXIT
+trap 'rm -f "$lock/config.toml" "$lock/original.toml"; rmdir "$lock"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -112,21 +96,13 @@ if [[ -d "$backup" ]]; then
   esac
 fi
 
-if [[ "$selection" == 2 ]]; then
-  printf '\n请输入 %s API Key（输入不回显）：' "$selection_name" >&2
-  IFS= read -rs token || fail '未读取到 API Key。'
-  printf '\n' >&2
-else
-  printf '\n请输入 %s API Key（输入内容会显示）：' "$selection_name" >&2
-  IFS= read -r token || fail '未读取到 API Key。'
-fi
+printf '\n请输入 TB-GPT API Key（输入内容会显示）：' >&2
+IFS= read -r token || fail '未读取到 API Key。'
 if [[ ! "$token" =~ ^[A-Za-z0-9._~+/-]+=*$ ]]; then
   fail 'API Key 为空或含有无效字符。'
 fi
 
-case "$selection" in
-  1)
-    cat > "$lock/config.toml" <<EOF
+cat > "$lock/config.toml" <<EOF
 model_provider = "OpenAI"
 model = "gpt-6.1-sol"
 review_model = "gpt-6.1-sol"
@@ -148,67 +124,6 @@ api_key_model_discovery = true
 image_generation = true
 goals = true
 EOF
-    ;;
-  2)
-    catalog="$codex_dir/codex-setup-kimi-models.json"
-    if [[ -L "$catalog" || ( -e "$catalog" && ! -f "$catalog" ) ]]; then
-      fail "模型目录路径必须是普通文件：$catalog"
-    fi
-    if [[ "$catalog" =~ [[:cntrl:]] ]]; then
-      fail 'CODEX_HOME 路径不能含有控制字符。'
-    fi
-    cat > "$lock/kimi-models.json" <<'KIMI_MODELS'
-{
-  "models": [
-    {
-      "slug": "kimi-k3.1-pro",
-      "display_name": "Kimi K3.1 Pro",
-      "base_instructions": "You are Codex, a coding assistant working in the user's workspace. Follow the user's request and the applicable repository instructions. Use the available tools to inspect, edit, and verify your work. Preserve unrelated changes and report the results and any unresolved limitations.",
-      "model_messages": {
-        "instructions_template": "You are Codex, a coding assistant working in the user's workspace. Follow the user's request and the applicable repository instructions. Use the available tools to inspect, edit, and verify your work. Preserve unrelated changes and report the results and any unresolved limitations."
-      },
-      "default_reasoning_level": "max",
-      "supported_reasoning_levels": [
-        {"effort": "low", "description": "Low reasoning effort"},
-        {"effort": "high", "description": "High reasoning effort"},
-        {"effort": "max", "description": "Maximum reasoning effort"}
-      ],
-      "shell_type": "shell_command",
-      "visibility": "list",
-      "supported_in_api": true,
-      "priority": 1,
-      "support_verbosity": false,
-      "supports_reasoning_summary_parameter": false,
-      "truncation_policy": {
-        "mode": "tokens",
-        "limit": 10000
-      },
-      "context_window": 1048576,
-      "max_context_window": 1048576,
-      "experimental_supported_tools": [],
-      "input_modalities": ["text", "image"],
-      "supports_search_tool": true
-    }
-  ]
-}
-KIMI_MODELS
-    catalog_toml=${catalog//\\/\\\\}
-    catalog_toml=${catalog_toml//\"/\\\"}
-    cat > "$lock/config.toml" <<EOF
-model = "kimi-k3.1-pro"
-model_provider = "kimi"
-model_context_window = 1048576
-model_reasoning_effort = "max"
-model_catalog_json = "$catalog_toml"
-
-[model_providers.kimi]
-name = "Kimi"
-base_url = "https://api.moonshot.cn/v1"
-env_key = "KIMI_API_KEY"
-wire_api = "responses"
-EOF
-    ;;
-esac
 
 if [[ "$backup_choice" == 1 ]]; then
   mkdir -p "$backup"
@@ -222,11 +137,8 @@ if [[ "$backup_choice" == 1 ]]; then
   fi
 fi
 
-if [[ "$selection" == 2 ]]; then
-  mv -f "$lock/kimi-models.json" "$catalog"
-fi
 mv -f "$lock/config.toml" "$config"
-printf '已配置 %s：%s\n备份目录：%s\n' "$selection_name" "$config" "$backup"
+printf '已配置 TB-GPT：%s\n备份目录：%s\n' "$config" "$backup"
 setup_failed=0
 for key_name in CODEX_RELAY_API_KEY HY4_API_KEY KIMI_API_KEY; do
   if ! /bin/launchctl unsetenv "$key_name"; then
@@ -234,21 +146,13 @@ for key_name in CODEX_RELAY_API_KEY HY4_API_KEY KIMI_API_KEY; do
     setup_failed=1
   fi
 done
-if [[ "$selection" == 2 ]] && ! /bin/launchctl setenv KIMI_API_KEY "$token"; then
-  printf '%s\n' '无法为登录会话设置新的 Kimi API Key。' >&2
-  selection=clear
-  setup_failed=1
-fi
 unset token
 
 printf '%s\n' '使用桌面端时，请按 ⌘Q 完全退出应用，再重新打开。'
 if [[ "$report_selection" == 1 ]]; then
-  printf '%s\n' "$selection" >&3
+  printf '%s\n' '1' >&3
 else
   printf '%s\n' '请在当前终端运行：' 'unset CODEX_RELAY_API_KEY HY4_API_KEY KIMI_API_KEY'
-  if [[ "$selection" == 2 ]]; then
-    printf '%s\n' 'export KIMI_API_KEY="$(/bin/launchctl getenv KIMI_API_KEY)"'
-  fi
 fi
 exit "$setup_failed"
 CODEX_SETUP_BASH
@@ -266,14 +170,9 @@ _codex_setup_macos() {
 
   if [[ "$setup_in_caller" == 1 ]]; then
     setup_result="$(_codex_setup_run_macos --report-selection)" || setup_rc=$?
-    case "$setup_result" in
-      1|2|clear)
-        unset CODEX_RELAY_API_KEY HY4_API_KEY KIMI_API_KEY
-        if [[ "$setup_result" == 2 ]]; then
-          export KIMI_API_KEY="$(/bin/launchctl getenv KIMI_API_KEY)"
-        fi
-        ;;
-    esac
+    if [[ "$setup_result" == 1 ]]; then
+      unset CODEX_RELAY_API_KEY HY4_API_KEY KIMI_API_KEY
+    fi
   else
     _codex_setup_run_macos "$@" || setup_rc=$?
   fi
