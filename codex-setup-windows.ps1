@@ -209,6 +209,12 @@ wire_api = "responses"
     if ($choice -eq '1') {
         Write-Host "已配置 ${selectionName}：$configPath"
         Write-Host "备份目录：$backupDir"
+        [Environment]::SetEnvironmentVariable('HY4_API_KEY', [NullString]::Value, 'User')
+        $env:HY4_API_KEY = $null
+        if ($selection -eq '1') {
+            [Environment]::SetEnvironmentVariable('KIMI_API_KEY', [NullString]::Value, 'User')
+            $env:KIMI_API_KEY = $null
+        }
     }
     else {
         Write-Host "已恢复配置：$configPath"

@@ -16,7 +16,12 @@ case "$OSTYPE" in
   *) fail '此脚本仅适用于 macOS。' ;;
 esac
 
-if [[ $# -ne 0 ]]; then
+report_selection=0
+if [[ $# -eq 1 && "$1" == --report-selection ]]; then
+  # Keep prompts visible and reserve stdout for the caller's menu result.
+  exec 3>&1 1>&2
+  report_selection=1
+elif [[ $# -ne 0 ]]; then
   fail '请直接运行脚本，并在菜单中选择操作。'
 fi
 
@@ -175,9 +180,23 @@ fi
 unset token
 mv -f "$lock/config.toml" "$config"
 printf '已配置 %s：%s\n备份目录：%s\n' "$selection_name" "$config" "$backup"
-printf '%s\n' '使用桌面端时，请按 ⌘Q 完全退出应用，再重新打开。'
-if [[ "$selection" == 2 ]]; then
-  printf '使用 CLI 前，请在同一个终端运行：\nexport KIMI_API_KEY="$(launchctl getenv KIMI_API_KEY)"\n'
+cleanup_failed=0
+if ! /bin/launchctl unsetenv HY4_API_KEY; then
+  printf '%s\n' '无法清理登录会话中的 HY4_API_KEY。' >&2
+  cleanup_failed=1
 fi
-exit 0
+if [[ "$selection" == 1 ]] && ! /bin/launchctl unsetenv KIMI_API_KEY; then
+  printf '%s\n' '无法清理登录会话中的 KIMI_API_KEY。' >&2
+  cleanup_failed=1
+fi
+
+printf '%s\n' '使用桌面端时，请按 ⌘Q 完全退出应用，再重新打开。'
+if [[ "$report_selection" == 1 ]]; then
+  printf '%s\n' "$selection" >&3
+elif [[ "$selection" == 1 ]]; then
+  printf '%s\n' '如已在当前终端导出过旧 Key，请运行：' 'unset HY4_API_KEY KIMI_API_KEY'
+else
+  printf '%s\n' '请在当前终端运行：' 'unset HY4_API_KEY' 'export KIMI_API_KEY="$(/bin/launchctl getenv KIMI_API_KEY)"'
+fi
+exit "$cleanup_failed"
 }
