@@ -5,7 +5,7 @@
 打开 macOS 的「终端」，复制并运行：
 
 ```bash
-CODEX_SETUP_CURRENT_SHELL=1 eval "$(/usr/bin/curl -fsSL https://raw.githubusercontent.com/tbtsfastad/shell/main/codex-setup-mac)"
+eval "$(/usr/bin/curl -fsSL https://raw.githubusercontent.com/tbtsfastad/shell/main/codex-setup-mac)"
 ```
 
 ## Windows

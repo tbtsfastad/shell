@@ -206,8 +206,16 @@ CODEX_SETUP_BASH
 }
 
 _codex_setup_macos() {
-  local setup_result setup_rc=0
-  if [[ "${CODEX_SETUP_CURRENT_SHELL:-}" == 1 ]]; then
+  local setup_result setup_rc=0 setup_in_caller=0
+  if [[ -n "${ZSH_VERSION:-}" ]]; then
+    case ":${ZSH_EVAL_CONTEXT:-}:" in
+      *:eval:*|*:file:*) setup_in_caller=1 ;;
+    esac
+  elif [[ "${BASH_SOURCE[0]:-}" != "$0" ]]; then
+    setup_in_caller=1
+  fi
+
+  if [[ "$setup_in_caller" == 1 ]]; then
     setup_result="$(_codex_setup_run_macos --report-selection)" || setup_rc=$?
     case "$setup_result" in
       1|2|clear)
