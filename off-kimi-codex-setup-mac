@@ -1,0 +1,106 @@
+#!/bin/bash
+
+# Read the entire script before making changes when launched with bash <(curl ...).
+{
+set +x
+set -euo pipefail
+umask 077
+
+fail() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+case "$OSTYPE" in
+  darwin*) ;;
+  *) fail '此脚本仅适用于 macOS。' ;;
+esac
+
+if [[ $# -ne 0 ]]; then
+  fail '请直接运行脚本，并在菜单中选择操作。'
+fi
+
+printf '%s\n' 'Kimi K3.1 Pro · Codex（macOS）' '1) 安装配置' '9) 恢复安装前的配置' '0) 退出'
+printf '请选择 [1/9/0]：' >&2
+IFS= read -r action || fail '未读取到选项。'
+case "$action" in
+  1|9) ;;
+  0) exit 0 ;;
+  *) fail '请选择 1、9 或 0。' ;;
+esac
+
+if [[ "$action" == 1 ]]; then
+  printf '\n请输入 Kimi API Key（输入不回显）：' >&2
+  IFS= read -rs token || fail '未读取到 API Key。'
+  printf '\n' >&2
+  if [[ ! "$token" =~ ^[A-Za-z0-9._~+/-]+=*$ ]]; then
+    fail 'API Key 为空或含有无效字符。'
+  fi
+fi
+
+codex_dir="${CODEX_HOME:-$HOME/.codex}"
+if [[ "$codex_dir" != /* ]]; then
+  codex_dir="$PWD/$codex_dir"
+fi
+config="$codex_dir/config.toml"
+backup="$codex_dir/backup-kimi"
+lock="$codex_dir/.kimi-setup.lock"
+
+mkdir -p "$codex_dir"
+mkdir "$lock" 2>/dev/null || fail "无法锁定配置目录：$lock"
+trap 'rm -f "$lock/config.toml" "$lock/original.toml"; rmdir "$lock"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ -L "$config" || ( -e "$config" && ! -f "$config" ) ]]; then
+  fail "配置路径必须是普通文件：$config"
+fi
+if [[ -L "$backup" || ( -e "$backup" && ! -d "$backup" ) ]]; then
+  fail "备份路径必须是目录：$backup"
+fi
+
+if [[ "$action" == 9 ]]; then
+  if [[ -f "$backup/config.toml" ]]; then
+    cp "$backup/config.toml" "$lock/config.toml"
+    mv -f "$lock/config.toml" "$config"
+    printf '已恢复配置：%s\n' "$config"
+  elif [[ -f "$backup/no-config" ]]; then
+    rm -f "$config"
+    printf '%s\n' '已恢复到安装前没有 config.toml 的状态。'
+  else
+    fail "找不到可用备份：$backup"
+  fi
+  printf '%s\n' '使用桌面端时，请按 ⌘Q 完全退出应用，再重新打开。'
+  exit 0
+fi
+
+cat > "$lock/config.toml" <<'EOF'
+model = "kimi-k3.1-pro"
+model_provider = "kimi"
+model_context_window = 1048576
+
+[model_providers.kimi]
+name = "Kimi"
+base_url = "https://api.moonshot.cn/v1"
+env_key = "KIMI_API_KEY"
+wire_api = "responses"
+EOF
+
+if [[ ! -f "$backup/config.toml" && ! -f "$backup/no-config" ]]; then
+  mkdir -p "$backup"
+  if [[ -f "$config" ]]; then
+    cp "$config" "$lock/original.toml"
+    mv "$lock/original.toml" "$backup/config.toml"
+  else
+    : > "$backup/no-config"
+  fi
+fi
+
+/bin/launchctl setenv KIMI_API_KEY "$token"
+unset token
+mv -f "$lock/config.toml" "$config"
+printf '已写入配置：%s\n首次安装前的配置备份：%s\n' "$config" "$backup"
+printf '%s\n' '使用桌面端时，请按 ⌘Q 完全退出应用，再重新打开。'
+printf '%s\n' '在已打开的终端使用 CLI 前，请运行：' 'export KIMI_API_KEY="$(launchctl getenv KIMI_API_KEY)"'
+exit 0
+}
