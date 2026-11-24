@@ -48,7 +48,7 @@ lock="$codex_dir/.kimi-setup.lock"
 
 mkdir -p "$codex_dir"
 mkdir "$lock" 2>/dev/null || fail "无法锁定配置目录：$lock"
-trap 'rm -f "$lock/config.toml" "$lock/original.toml" "$lock/kimi-models.json" "$lock/kimi-api-models.json"; rmdir "$lock"' EXIT
+trap 'rm -f "$lock/config.toml" "$lock/original.toml" "$lock/kimi-models.json"; rmdir "$lock"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -81,71 +81,48 @@ fi
 if [[ "$catalog" =~ [[:cntrl:]] ]]; then
   fail 'CODEX_HOME 路径不能含有控制字符。'
 fi
-if ! printf 'Authorization: Bearer %s\n' "$token" | /usr/bin/curl -fsS --max-time 20 --header @- 'https://api.moonshot.cn/v1/models' -o "$lock/kimi-api-models.json"; then
-  fail '无法获取 Kimi 模型列表，请检查 API Key 和网络。'
-fi
-
-# Kimi returns a generic data array. Build the Codex catalog from the Responses-compatible entries.
-catalog_selection=$(/usr/bin/osascript -l JavaScript - "$lock/kimi-api-models.json" "$lock/kimi-models.json" <<'KIMI_CATALOG_JS'
-ObjC.import('Foundation');
-
-function run(argv) {
-  var input = $.NSString.stringWithContentsOfFileEncodingError(argv[0], $.NSUTF8StringEncoding, null);
-  var response = JSON.parse(ObjC.unwrap(input));
-  if (!Array.isArray(response.data)) {
-    throw new Error('Kimi 模型列表格式无效。');
-  }
-
-  var supported = [
-    ['kimi-k3.1-pro', 'Kimi K3.1 Pro'],
-    ['kimi-k3', 'Kimi K3'],
-    ['kimi-k3.1-pro-highspeed', 'Kimi K3.1 Pro Highspeed']
-  ];
-  var models = [];
-  supported.forEach(function (entry) {
-    var available = response.data.filter(function (model) { return model && model.id === entry[0]; })[0];
-    if (!available) return;
-    var context = available.context_length;
-    if (!Number.isSafeInteger(context) || context <= 0) context = 1048576;
-    models.push({
-      slug: entry[0],
-      display_name: entry[1],
-      default_reasoning_level: 'max',
-      supported_reasoning_levels: [
-        { effort: 'low', description: 'Low reasoning effort' },
-        { effort: 'high', description: 'High reasoning effort' },
-        { effort: 'max', description: 'Maximum reasoning effort' }
+cat > "$lock/kimi-models.json" <<'KIMI_MODELS'
+{
+  "models": [
+    {
+      "slug": "kimi-k3.1-pro",
+      "display_name": "Kimi K3.1 Pro",
+      "base_instructions": "You are Codex, a coding assistant working in the user's workspace. Follow the user's request and the applicable repository instructions. Use the available tools to inspect, edit, and verify your work. Preserve unrelated changes and report the results and any unresolved limitations.",
+      "model_messages": {
+        "instructions_template": "You are Codex, a coding assistant working in the user's workspace. Follow the user's request and the applicable repository instructions. Use the available tools to inspect, edit, and verify your work. Preserve unrelated changes and report the results and any unresolved limitations."
+      },
+      "default_reasoning_level": "max",
+      "supported_reasoning_levels": [
+        {"effort": "low", "description": "Low reasoning effort"},
+        {"effort": "high", "description": "High reasoning effort"},
+        {"effort": "max", "description": "Maximum reasoning effort"}
       ],
-      shell_type: 'shell_command',
-      visibility: 'list',
-      supported_in_api: true,
-      priority: models.length + 1,
-      support_verbosity: false,
-      supports_reasoning_summary_parameter: false,
-      truncation_policy: { mode: 'tokens', limit: 10000 },
-      context_window: context,
-      max_context_window: context,
-      experimental_supported_tools: [],
-      input_modalities: available.supports_image_in === false ? ['text'] : ['text', 'image'],
-      supports_search_tool: true
-    });
-  });
-  if (!models.length) throw new Error('当前 API Key 没有可用的 Kimi Responses 模型。');
-  var json = $(JSON.stringify({ models: models }));
-  if (!json.writeToFileAtomicallyEncodingError(argv[1], true, $.NSUTF8StringEncoding, null)) {
-    throw new Error('无法保存 Kimi 模型目录。');
-  }
-  return models[0].slug + ' ' + models[0].context_window;
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 1,
+      "support_verbosity": false,
+      "supports_reasoning_summary_parameter": false,
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"],
+      "supports_search_tool": true
+    }
+  ]
 }
-KIMI_CATALOG_JS
-) || fail '无法生成 Kimi 模型目录，原配置未替换。'
-IFS=' ' read -r kimi_model kimi_context <<< "$catalog_selection"
+KIMI_MODELS
 catalog_toml=${catalog//\\/\\\\}
 catalog_toml=${catalog_toml//\"/\\\"}
 cat > "$lock/config.toml" <<EOF
-model = "$kimi_model"
+model = "kimi-k3.1-pro"
 model_provider = "kimi"
-model_context_window = $kimi_context
+model_context_window = 1048576
+model_reasoning_effort = "max"
 model_catalog_json = "$catalog_toml"
 
 [model_providers.kimi]

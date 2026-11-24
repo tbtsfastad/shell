@@ -163,70 +163,48 @@ goals = true
         else {
             $catalog = Join-Path $codexHome 'codex-setup-kimi-models.json'
             $catalogExists = $null -ne (Get-SetupItem $catalog)
-            try {
-                $response = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.moonshot.cn/v1/models' -Headers @{ Authorization = "Bearer $token" } -TimeoutSec 20 -MaximumRedirection 0
-            }
-            catch {
-                throw '无法获取 Kimi 模型列表，请检查 API Key 和网络。'
-            }
-            if ($null -eq $response.data -or $response.data -isnot [array]) {
-                throw 'Kimi 模型列表格式无效。'
-            }
-
-            # Kimi returns a generic data array. Build the Codex catalog from the Responses-compatible entries.
-            $supported = [ordered]@{
-                'kimi-k3.1-pro' = 'Kimi K3.1 Pro'
-                'kimi-k3' = 'Kimi K3'
-                'kimi-k3.1-pro-highspeed' = 'Kimi K3.1 Pro Highspeed'
-            }
-            $priority = 0
-            $models = @(
-                foreach ($id in $supported.Keys) {
-                    $available = $response.data | Where-Object { $_.id -ceq $id } | Select-Object -First 1
-                    if (-not $available) { continue }
-                    $context = 1048576
-                    $reportedContext = 0L
-                    if ([long]::TryParse([string]$available.context_length, [ref]$reportedContext) -and $reportedContext -gt 0) {
-                        $context = $reportedContext
-                    }
-                    $modalities = @('text')
-                    if ($false -ne $available.supports_image_in) { $modalities += 'image' }
-                    $priority += 1
-                    [ordered]@{
-                        slug = $id
-                        display_name = $supported[$id]
-                        default_reasoning_level = 'max'
-                        supported_reasoning_levels = @(
-                            @{ effort = 'low'; description = 'Low reasoning effort' }
-                            @{ effort = 'high'; description = 'High reasoning effort' }
-                            @{ effort = 'max'; description = 'Maximum reasoning effort' }
-                        )
-                        shell_type = 'shell_command'
-                        visibility = 'list'
-                        supported_in_api = $true
-                        priority = $priority
-                        support_verbosity = $false
-                        supports_reasoning_summary_parameter = $false
-                        truncation_policy = @{ mode = 'tokens'; limit = 10000 }
-                        context_window = $context
-                        max_context_window = $context
-                        experimental_supported_tools = @()
-                        input_modalities = $modalities
-                        supports_search_tool = $true
-                    }
-                }
-            )
-            if ($models.Count -eq 0) {
-                throw '当前 API Key 没有可用的 Kimi Responses 模型。'
-            }
-            [IO.File]::WriteAllText($tempCatalog, (ConvertTo-Json -InputObject @{ models = $models } -Depth 8))
-            $kimiModel = $models[0].slug
-            $kimiContext = $models[0].context_window
+            $catalogJson = @'
+{
+  "models": [
+    {
+      "slug": "kimi-k3.1-pro",
+      "display_name": "Kimi K3.1 Pro",
+      "base_instructions": "You are Codex, a coding assistant working in the user's workspace. Follow the user's request and the applicable repository instructions. Use the available tools to inspect, edit, and verify your work. Preserve unrelated changes and report the results and any unresolved limitations.",
+      "model_messages": {
+        "instructions_template": "You are Codex, a coding assistant working in the user's workspace. Follow the user's request and the applicable repository instructions. Use the available tools to inspect, edit, and verify your work. Preserve unrelated changes and report the results and any unresolved limitations."
+      },
+      "default_reasoning_level": "max",
+      "supported_reasoning_levels": [
+        {"effort": "low", "description": "Low reasoning effort"},
+        {"effort": "high", "description": "High reasoning effort"},
+        {"effort": "max", "description": "Maximum reasoning effort"}
+      ],
+      "shell_type": "shell_command",
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 1,
+      "support_verbosity": false,
+      "supports_reasoning_summary_parameter": false,
+      "truncation_policy": {
+        "mode": "tokens",
+        "limit": 10000
+      },
+      "context_window": 1048576,
+      "max_context_window": 1048576,
+      "experimental_supported_tools": [],
+      "input_modalities": ["text", "image"],
+      "supports_search_tool": true
+    }
+  ]
+}
+'@
+            [IO.File]::WriteAllText($tempCatalog, $catalogJson)
             $catalogToml = $catalog.Replace('\', '\\').Replace('"', '\"')
             $config = @"
-model = "$kimiModel"
+model = "kimi-k3.1-pro"
 model_provider = "kimi"
-model_context_window = $kimiContext
+model_context_window = 1048576
+model_reasoning_effort = "max"
 model_catalog_json = "$catalogToml"
 
 [model_providers.kimi]
