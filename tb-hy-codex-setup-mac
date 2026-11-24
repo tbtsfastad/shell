@@ -1,0 +1,135 @@
+#!/bin/bash
+
+# Read the entire script before making changes when launched with bash <(curl ...).
+{
+set +x
+set -euo pipefail
+umask 077
+
+fail() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+case "$OSTYPE" in
+  darwin*) ;;
+  *) fail '此脚本仅适用于 macOS。' ;;
+esac
+
+if [[ $# -ne 0 ]]; then
+  fail '请直接运行脚本，并在菜单中选择操作。'
+fi
+
+printf '%s\n' '腾讯 Hy4 · Codex（macOS）' '1) 安装 TokenHub（按量计费）' '2) 安装 Token Plan（订阅套餐）' '9) 恢复安装前的配置' '0) 退出'
+printf '请选择 [1/2/9/0]：' >&2
+IFS= read -r action || fail '未读取到选项。'
+case "$action" in
+  1|2|9) ;;
+  0) exit 0 ;;
+  *) fail '请选择 1、2、9 或 0。' ;;
+esac
+
+if [[ "$action" != 9 ]]; then
+  if [[ "$action" == 1 ]]; then
+    provider="hy4-tokenhub"
+    provider_name="Hy4 via tokenhub"
+    base_url="https://tokenhub.tencentmaas.com/v1"
+  else
+    provider="hy4-tokenplan"
+    provider_name="Hy4 via Token Plan"
+    base_url="https://tokenhub.tencentmaas.com/plan/v3"
+  fi
+  printf '\n请输入腾讯云 API Key（输入内容会显示）：' >&2
+  IFS= read -r token || fail '未读取到 API Key。'
+  if [[ ! "$token" =~ ^[A-Za-z0-9._~+/-]+=*$ ]]; then
+    fail 'API Key 为空或含有无效字符。'
+  fi
+fi
+
+codex_dir="${CODEX_HOME:-$HOME/.codex}"
+if [[ "$codex_dir" != /* ]]; then
+  codex_dir="$PWD/$codex_dir"
+fi
+config="$codex_dir/config.toml"
+backup="$codex_dir/backup-hy4"
+lock="$codex_dir/.hy4-setup.lock"
+
+catalog="$backup/models.json"
+catalog_url="https://hy-model-ap-prod-1258344703.cos.accelerate.myqcloud.com/public/hy4/files/zh/k7ou_codex/models.json"
+catalog_sha="dad5abf251056f107f17579d08e0c415cc724b0624dba99b8682dee69d41dc2f"
+
+mkdir -p "$codex_dir"
+mkdir "$lock" 2>/dev/null || fail "无法锁定配置目录：$lock"
+trap 'rm -f "$lock/config.toml" "$lock/original.toml" "$lock/models.json"; rmdir "$lock"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ -L "$config" || ( -e "$config" && ! -f "$config" ) ]]; then
+  fail "配置路径必须是普通文件：$config"
+fi
+if [[ -L "$backup" || ( -e "$backup" && ! -d "$backup" ) ]]; then
+  fail "备份路径必须是目录：$backup"
+fi
+
+if [[ "$action" == 9 ]]; then
+  if [[ -f "$backup/config.toml" ]]; then
+    cp "$backup/config.toml" "$lock/config.toml"
+    mv -f "$lock/config.toml" "$config"
+    printf '已恢复配置：%s\n' "$config"
+  elif [[ -f "$backup/no-config" ]]; then
+    rm -f "$config"
+    printf '%s\n' '已恢复到安装前没有 config.toml 的状态。'
+  else
+    fail "找不到可用备份：$backup"
+  fi
+  printf '%s\n' '使用桌面端时，请按 ⌘Q 完全退出应用，再重新打开。'
+  exit 0
+fi
+
+if [[ -L "$catalog" || ( -e "$catalog" && ! -f "$catalog" ) ]]; then
+  fail "模型目录路径必须是普通文件：$catalog"
+fi
+
+/usr/bin/curl -fsSL "$catalog_url" -o "$lock/models.json"
+if ! (cd "$lock" && printf '%s  models.json\n' "$catalog_sha" | /usr/bin/shasum -a 256 -c --status); then
+  fail '腾讯官方模型目录的校验值已变化，请更新安装脚本后重试。'
+fi
+
+if [[ "$catalog" =~ [[:cntrl:]] ]]; then
+  fail 'CODEX_HOME 路径不能含有控制字符。'
+fi
+catalog_toml=${catalog//\\/\\\\}
+catalog_toml=${catalog_toml//\"/\\\"}
+cat > "$lock/config.toml" <<EOF
+model_provider = "$provider"
+model = "hy4"
+model_catalog_json = "$catalog_toml"
+web_search = "disabled"
+model_reasoning_effort = "high"
+
+[model_providers.$provider]
+name = "$provider_name"
+base_url = "$base_url"
+env_key = "HY4_API_KEY"
+wire_api = "responses"
+EOF
+
+if [[ ! -f "$backup/config.toml" && ! -f "$backup/no-config" ]]; then
+  mkdir -p "$backup"
+  if [[ -f "$config" ]]; then
+    cp "$config" "$lock/original.toml"
+    mv "$lock/original.toml" "$backup/config.toml"
+  else
+    : > "$backup/no-config"
+  fi
+fi
+
+mv -f "$lock/models.json" "$catalog"
+/bin/launchctl setenv HY4_API_KEY "$token"
+unset token
+mv -f "$lock/config.toml" "$config"
+printf '已写入配置：%s\n首次安装前的配置备份：%s\n' "$config" "$backup"
+printf '%s\n' '使用桌面端时，请按 ⌘Q 完全退出应用，再重新打开。'
+printf '%s\n' '在已打开的终端使用 CLI 前，请运行：' 'export HY4_API_KEY="$(launchctl getenv HY4_API_KEY)"'
+exit 0
+}
