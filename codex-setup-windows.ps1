@@ -85,22 +85,6 @@ if ($choice -eq '1') {
         default { throw '请选择 1、2、3、4 或 0。' }
     }
 
-    Write-Host ''
-    if ($selection -eq '4') {
-        $secureKey = Read-Host '请输入 Kimi API Key' -AsSecureString
-        try {
-            $token = [PSCredential]::new('Kimi', $secureKey).GetNetworkCredential().Password
-        }
-        finally {
-            $secureKey.Dispose()
-        }
-    }
-    else {
-        $token = Read-Host "请输入 $selectionName API Key（输入内容会显示）"
-    }
-    if ($token -cnotmatch '\A[A-Za-z0-9._~+/-]+=*\z') {
-        throw 'API Key 为空或含有无效字符。'
-    }
     [IO.Directory]::CreateDirectory($codexHome) | Out-Null
 }
 elseif (-not [IO.Directory]::Exists($codexHome)) {
@@ -120,13 +104,13 @@ try {
     if ($backupDirExists) {
         $hasBackup = $null -ne (Get-SetupItem $backupConfig)
         $hadNoConfig = $null -ne (Get-SetupItem $noConfig)
-        if ($hasBackup -and $hadNoConfig) {
-            throw "备份状态冲突：$backupDir"
-        }
     }
 
     if ($choice -eq '9') {
-        if ($hadNoConfig) {
+        if ($hasBackup) {
+            [IO.File]::Copy($backupConfig, $tempConfig)
+        }
+        elseif ($hadNoConfig) {
             if ($configExists) {
                 [IO.File]::Delete($configPath)
             }
@@ -134,12 +118,45 @@ try {
             Write-Host '请完全退出 Codex 桌面端，再重新打开。'
             return
         }
-        if (-not $hasBackup) {
+        else {
             throw "找不到可用备份：$backupDir"
         }
-        [IO.File]::Copy($backupConfig, $tempConfig)
     }
     else {
+        $backupChoice = '1'
+        if ($backupDirExists) {
+            Write-Host ''
+            if ($hasBackup -or $hadNoConfig) {
+                Write-Host "已有备份：$backupDir"
+            }
+            else {
+                Write-Host "备份目录已存在，但没有可用备份：$backupDir"
+            }
+            Write-Host '1) 用当前配置替换备份'
+            Write-Host '2) 忽略，保留现有备份'
+            $backupChoice = Read-Host '请选择 [1/2]'
+            if ($backupChoice -notin '1', '2') {
+                throw '请选择 1 或 2。'
+            }
+        }
+
+        Write-Host ''
+        if ($selection -eq '4') {
+            $secureKey = Read-Host '请输入 Kimi API Key' -AsSecureString
+            try {
+                $token = [PSCredential]::new('Kimi', $secureKey).GetNetworkCredential().Password
+            }
+            finally {
+                $secureKey.Dispose()
+            }
+        }
+        else {
+            $token = Read-Host "请输入 $selectionName API Key（输入内容会显示）"
+        }
+        if ($token -cnotmatch '\A[A-Za-z0-9._~+/-]+=*\z') {
+            throw 'API Key 为空或含有无效字符。'
+        }
+
         if ($selection -eq '1') {
             $config = @"
 model_provider = "OpenAI"
@@ -202,14 +219,21 @@ wire_api = "responses"
         }
         [IO.File]::WriteAllText($tempConfig, $config + [Environment]::NewLine)
 
-        if (-not ($hasBackup -or $hadNoConfig)) {
+        if ($backupChoice -eq '1') {
             [IO.Directory]::CreateDirectory($backupDir) | Out-Null
             if ($configExists) {
                 [IO.File]::Copy($configPath, $tempBackup)
-                [IO.File]::Move($tempBackup, $backupConfig)
+                if ($hasBackup) {
+                    [IO.File]::Replace($tempBackup, $backupConfig, [NullString]::Value)
+                }
+                else {
+                    [IO.File]::Move($tempBackup, $backupConfig)
+                }
+                [IO.File]::Delete($noConfig)
             }
             else {
                 [IO.File]::WriteAllText($noConfig, '')
+                [IO.File]::Delete($backupConfig)
             }
         }
 
