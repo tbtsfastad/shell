@@ -1,4 +1,4 @@
 # Shell 工具
 
-- [Codex 中转站](README-codex-relay.md) — macOS 和 Windows 的配置、安装与恢复。
+- [Codex 一键配置](README-codex-relay.md) — 在 macOS 和 Windows 上选择 TB-GPT、腾讯 Hy4 或 Kimi，配置或恢复 Codex。
 - [ts-and-cmd](README-ts-and-cmd.md) — Android 工程运行命令的安装和使用。
