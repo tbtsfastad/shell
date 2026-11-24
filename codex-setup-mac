@@ -30,34 +30,18 @@ case "$action" in
 esac
 
 if [[ "$action" == 1 ]]; then
-  printf '\n%s\n' '请选择服务商' '1) TB-GPT' '2) 腾讯 Hy4 · TokenHub' '3) 腾讯 Hy4 · Token Plan' '4) Kimi' '0) 退出'
-  printf '请选择 [1/2/3/4/0]：' >&2
+  printf '\n%s\n' '请选择服务商' '1) TB-GPT' '2) Kimi' '0) 退出'
+  printf '请选择 [1/2/0]：' >&2
   IFS= read -r selection || fail '未读取到选项。'
-  key_name=''
   case "$selection" in
     1)
       selection_name="TB-GPT"
       ;;
     2)
-      selection_name="腾讯 Hy4 · TokenHub"
-      provider="hy4-tokenhub"
-      provider_name="Hy4 via tokenhub"
-      base_url="https://tokenhub.tencentmaas.com/v1"
-      key_name="HY4_API_KEY"
-      ;;
-    3)
-      selection_name="腾讯 Hy4 · Token Plan"
-      provider="hy4-tokenplan"
-      provider_name="Hy4 via Token Plan"
-      base_url="https://tokenhub.tencentmaas.com/plan/v3"
-      key_name="HY4_API_KEY"
-      ;;
-    4)
       selection_name="Kimi"
-      key_name="KIMI_API_KEY"
       ;;
     0) exit 0 ;;
-    *) fail '请选择 1、2、3、4 或 0。' ;;
+    *) fail '请选择 1、2 或 0。' ;;
   esac
 fi
 
@@ -69,17 +53,13 @@ config="$codex_dir/config.toml"
 backup="$codex_dir/backup-codex-setup"
 lock="$codex_dir/.codex-setup.lock"
 
-catalog="$backup/hy4-models.json"
-catalog_url="https://hy-model-ap-prod-1258344703.cos.accelerate.myqcloud.com/public/hy4/files/zh/k7ou_codex/models.json"
-catalog_sha="dad5abf251056f107f17579d08e0c415cc724b0624dba99b8682dee69d41dc2f"
-
 if [[ "$action" == 1 ]]; then
   mkdir -p "$codex_dir"
 elif [[ ! -d "$codex_dir" ]]; then
   fail "找不到可用备份：$backup"
 fi
 mkdir "$lock" 2>/dev/null || fail "无法锁定配置目录：$lock"
-trap 'rm -f "$lock/config.toml" "$lock/original.toml" "$lock/models.json"; rmdir "$lock"' EXIT
+trap 'rm -f "$lock/config.toml" "$lock/original.toml"; rmdir "$lock"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -125,7 +105,7 @@ if [[ -d "$backup" ]]; then
   esac
 fi
 
-if [[ "$selection" == 4 ]]; then
+if [[ "$selection" == 2 ]]; then
   printf '\n请输入 %s API Key（输入不回显）：' "$selection_name" >&2
   IFS= read -rs token || fail '未读取到 API Key。'
   printf '\n' >&2
@@ -162,36 +142,7 @@ image_generation = true
 goals = true
 EOF
     ;;
-  2|3)
-    if [[ -L "$catalog" || ( -e "$catalog" && ! -f "$catalog" ) ]]; then
-      fail "模型目录路径必须是普通文件：$catalog"
-    fi
-
-    /usr/bin/curl -fsSL "$catalog_url" -o "$lock/models.json"
-    if ! (cd "$lock" && printf '%s  models.json\n' "$catalog_sha" | /usr/bin/shasum -a 256 -c --status); then
-      fail '腾讯官方模型目录的校验值已变化，请更新安装脚本后重试。'
-    fi
-
-    if [[ "$catalog" =~ [[:cntrl:]] ]]; then
-      fail 'CODEX_HOME 路径不能含有控制字符。'
-    fi
-    catalog_toml=${catalog//\\/\\\\}
-    catalog_toml=${catalog_toml//\"/\\\"}
-    cat > "$lock/config.toml" <<EOF
-model_provider = "$provider"
-model = "hy4"
-model_catalog_json = "$catalog_toml"
-web_search = "disabled"
-model_reasoning_effort = "high"
-
-[model_providers.$provider]
-name = "$provider_name"
-base_url = "$base_url"
-env_key = "HY4_API_KEY"
-wire_api = "responses"
-EOF
-    ;;
-  4)
+  2)
     cat > "$lock/config.toml" <<'EOF'
 model = "kimi-k3.1-pro"
 model_provider = "kimi"
@@ -218,18 +169,15 @@ if [[ "$backup_choice" == 1 ]]; then
   fi
 fi
 
-if [[ "$selection" == 2 || "$selection" == 3 ]]; then
-  mv -f "$lock/models.json" "$catalog"
-fi
-if [[ -n "${key_name:-}" ]]; then
-  /bin/launchctl setenv "$key_name" "$token"
+if [[ "$selection" == 2 ]]; then
+  /bin/launchctl setenv KIMI_API_KEY "$token"
 fi
 unset token
 mv -f "$lock/config.toml" "$config"
 printf '已配置 %s：%s\n备份目录：%s\n' "$selection_name" "$config" "$backup"
 printf '%s\n' '使用桌面端时，请按 ⌘Q 完全退出应用，再重新打开。'
-if [[ -n "${key_name:-}" ]]; then
-  printf '使用 CLI 前，请在同一个终端运行：\nexport %s="$(launchctl getenv %s)"\n' "$key_name" "$key_name"
+if [[ "$selection" == 2 ]]; then
+  printf '使用 CLI 前，请在同一个终端运行：\nexport KIMI_API_KEY="$(launchctl getenv KIMI_API_KEY)"\n'
 fi
 exit 0
 }

@@ -41,10 +41,6 @@ $configPath = Join-Path $codexHome 'config.toml'
 $backupDir = Join-Path $codexHome 'backup-codex-setup'
 $backupConfig = Join-Path $backupDir 'config.toml'
 $noConfig = Join-Path $backupDir 'no-config'
-$catalog = Join-Path $backupDir 'hy4-models.json'
-$catalogUrl = 'https://hy-model-ap-prod-1258344703.cos.accelerate.myqcloud.com/public/hy4/files/zh/k7ou_codex/models.json'
-$catalogSha = 'dad5abf251056f107f17579d08e0c415cc724b0624dba99b8682dee69d41dc2f'
-$tempCatalog = Join-Path $codexHome ('.hy4-models-{0}.tmp' -f [Guid]::NewGuid())
 $lockPath = Join-Path $codexHome '.codex-setup.windows.lock'
 $tempConfig = Join-Path $codexHome ('.codex-config-{0}.tmp' -f [Guid]::NewGuid())
 $tempBackup = Join-Path $backupDir ('.original-{0}.tmp' -f [Guid]::NewGuid())
@@ -53,36 +49,18 @@ if ($choice -eq '1') {
     Write-Host ''
     Write-Host '请选择服务商'
     Write-Host '1) TB-GPT'
-    Write-Host '2) 腾讯 Hy4 · TokenHub'
-    Write-Host '3) 腾讯 Hy4 · Token Plan'
-    Write-Host '4) Kimi'
+    Write-Host '2) Kimi'
     Write-Host '0) 退出'
-    $selection = Read-Host '请选择 [1/2/3/4/0]'
-    $keyName = $null
+    $selection = Read-Host '请选择 [1/2/0]'
     switch ($selection) {
         '1' {
             $selectionName = 'TB-GPT'
         }
         '2' {
-            $selectionName = '腾讯 Hy4 · TokenHub'
-            $provider = 'hy4-tokenhub'
-            $providerName = 'Hy4 via tokenhub'
-            $baseUrl = 'https://tokenhub.tencentmaas.com/v1'
-            $keyName = 'HY4_API_KEY'
-        }
-        '3' {
-            $selectionName = '腾讯 Hy4 · Token Plan'
-            $provider = 'hy4-tokenplan'
-            $providerName = 'Hy4 via Token Plan'
-            $baseUrl = 'https://tokenhub.tencentmaas.com/plan/v3'
-            $keyName = 'HY4_API_KEY'
-        }
-        '4' {
             $selectionName = 'Kimi'
-            $keyName = 'KIMI_API_KEY'
         }
         '0' { return }
-        default { throw '请选择 1、2、3、4 或 0。' }
+        default { throw '请选择 1、2 或 0。' }
     }
 
     [IO.Directory]::CreateDirectory($codexHome) | Out-Null
@@ -141,7 +119,7 @@ try {
         }
 
         Write-Host ''
-        if ($selection -eq '4') {
+        if ($selection -eq '2') {
             $secureKey = Read-Host '请输入 Kimi API Key' -AsSecureString
             try {
                 $token = [PSCredential]::new('Kimi', $secureKey).GetNetworkCredential().Password
@@ -181,7 +159,7 @@ image_generation = true
 goals = true
 "@
         }
-        elseif ($selection -eq '4') {
+        else {
             $config = @'
 model = "kimi-k3.1-pro"
 model_provider = "kimi"
@@ -193,29 +171,6 @@ base_url = "https://api.moonshot.cn/v1"
 env_key = "KIMI_API_KEY"
 wire_api = "responses"
 '@
-        }
-        else {
-            $catalogExists = $null -ne (Get-SetupItem $catalog)
-            $response = Invoke-WebRequest -UseBasicParsing -Uri $catalogUrl
-            [IO.File]::WriteAllBytes($tempCatalog, $response.RawContentStream.ToArray())
-            if ((Get-FileHash -LiteralPath $tempCatalog -Algorithm SHA256).Hash -ne $catalogSha) {
-                throw '腾讯官方模型目录的校验值已变化，请更新安装脚本后重试。'
-            }
-
-            $catalogToml = $catalog.Replace('\', '\\').Replace('"', '\"')
-            $config = @"
-model_provider = "$provider"
-model = "hy4"
-model_catalog_json = "$catalogToml"
-web_search = "disabled"
-model_reasoning_effort = "high"
-
-[model_providers.$provider]
-name = "$providerName"
-base_url = "$baseUrl"
-env_key = "HY4_API_KEY"
-wire_api = "responses"
-"@
         }
         [IO.File]::WriteAllText($tempConfig, $config + [Environment]::NewLine)
 
@@ -237,17 +192,9 @@ wire_api = "responses"
             }
         }
 
-        if ($selection -in '2', '3') {
-            if ($catalogExists) {
-                [IO.File]::Replace($tempCatalog, $catalog, [NullString]::Value)
-            }
-            else {
-                [IO.File]::Move($tempCatalog, $catalog)
-            }
-        }
-        if ($keyName) {
-            [Environment]::SetEnvironmentVariable($keyName, $token, 'User')
-            [Environment]::SetEnvironmentVariable($keyName, $token, 'Process')
+        if ($selection -eq '2') {
+            [Environment]::SetEnvironmentVariable('KIMI_API_KEY', $token, 'User')
+            $env:KIMI_API_KEY = $token
         }
         $token = $null
     }
@@ -270,7 +217,7 @@ wire_api = "responses"
 }
 finally {
     try {
-        foreach ($path in $tempConfig, $tempBackup, $tempCatalog) {
+        foreach ($path in $tempConfig, $tempBackup) {
             if ([IO.File]::Exists($path)) {
                 [IO.File]::Delete($path)
             }
