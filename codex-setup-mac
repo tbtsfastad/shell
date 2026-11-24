@@ -1,7 +1,9 @@
 #!/bin/bash
 
-# Read the entire script before making changes when launched with bash <(curl ...).
+# Keep the Bash installer in a child process so sourcing only changes the two keys.
 {
+_codex_setup_run_macos() {
+  /bin/bash /dev/fd/4 "$@" 4<<'CODEX_SETUP_BASH'
 set +x
 set -euo pipefail
 umask 077
@@ -174,29 +176,53 @@ if [[ "$backup_choice" == 1 ]]; then
   fi
 fi
 
-if [[ "$selection" == 2 ]]; then
-  /bin/launchctl setenv KIMI_API_KEY "$token"
-fi
-unset token
 mv -f "$lock/config.toml" "$config"
 printf '已配置 %s：%s\n备份目录：%s\n' "$selection_name" "$config" "$backup"
-cleanup_failed=0
-if ! /bin/launchctl unsetenv HY4_API_KEY; then
-  printf '%s\n' '无法清理登录会话中的 HY4_API_KEY。' >&2
-  cleanup_failed=1
+setup_failed=0
+for key_name in CODEX_RELAY_API_KEY HY4_API_KEY KIMI_API_KEY; do
+  if ! /bin/launchctl unsetenv "$key_name"; then
+    printf '无法清理登录会话中的 %s。\n' "$key_name" >&2
+    setup_failed=1
+  fi
+done
+if [[ "$selection" == 2 ]] && ! /bin/launchctl setenv KIMI_API_KEY "$token"; then
+  printf '%s\n' '无法为登录会话设置新的 Kimi API Key。' >&2
+  selection=clear
+  setup_failed=1
 fi
-if [[ "$selection" == 1 ]] && ! /bin/launchctl unsetenv KIMI_API_KEY; then
-  printf '%s\n' '无法清理登录会话中的 KIMI_API_KEY。' >&2
-  cleanup_failed=1
-fi
+unset token
 
 printf '%s\n' '使用桌面端时，请按 ⌘Q 完全退出应用，再重新打开。'
 if [[ "$report_selection" == 1 ]]; then
   printf '%s\n' "$selection" >&3
-elif [[ "$selection" == 1 ]]; then
-  printf '%s\n' '如已在当前终端导出过旧 Key，请运行：' 'unset HY4_API_KEY KIMI_API_KEY'
 else
-  printf '%s\n' '请在当前终端运行：' 'unset HY4_API_KEY' 'export KIMI_API_KEY="$(/bin/launchctl getenv KIMI_API_KEY)"'
+  printf '%s\n' '请在当前终端运行：' 'unset CODEX_RELAY_API_KEY HY4_API_KEY KIMI_API_KEY'
+  if [[ "$selection" == 2 ]]; then
+    printf '%s\n' 'export KIMI_API_KEY="$(/bin/launchctl getenv KIMI_API_KEY)"'
+  fi
 fi
-exit "$cleanup_failed"
+exit "$setup_failed"
+CODEX_SETUP_BASH
+}
+
+_codex_setup_macos() {
+  local setup_result setup_rc=0
+  if [[ "${CODEX_SETUP_CURRENT_SHELL:-}" == 1 ]]; then
+    setup_result="$(_codex_setup_run_macos --report-selection)" || setup_rc=$?
+    case "$setup_result" in
+      1|2|clear)
+        unset CODEX_RELAY_API_KEY HY4_API_KEY KIMI_API_KEY
+        if [[ "$setup_result" == 2 ]]; then
+          export KIMI_API_KEY="$(/bin/launchctl getenv KIMI_API_KEY)"
+        fi
+        ;;
+    esac
+  else
+    _codex_setup_run_macos "$@" || setup_rc=$?
+  fi
+  unset -f _codex_setup_run_macos _codex_setup_macos
+  return "$setup_rc"
+}
+
+_codex_setup_macos "$@"
 }
