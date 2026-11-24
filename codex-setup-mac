@@ -20,13 +20,13 @@ if [[ $# -ne 0 ]]; then
   fail '请直接运行脚本，并在菜单中选择操作。'
 fi
 
-printf '%s\n' 'Codex 配置管理（macOS）' '1) 配置' '9) 恢复' '0) 退出'
-printf '请选择 [1/9/0]：' >&2
+printf '%s\n' 'Codex 配置管理（macOS）' '1) 配置' '2) 恢复' '3) 退出'
+printf '请选择 [1/2/3]：' >&2
 IFS= read -r action || fail '未读取到选项。'
 case "$action" in
-  1|9) ;;
-  0) exit 0 ;;
-  *) fail '请选择 1、9 或 0。' ;;
+  1|2) ;;
+  3) exit 0 ;;
+  *) fail '请选择 1、2 或 3。' ;;
 esac
 
 if [[ "$action" == 1 ]]; then
@@ -94,7 +94,7 @@ for backup_file in "$backup/config.toml" "$backup/no-config"; do
     fail "备份路径必须是普通文件：$backup_file"
   fi
 done
-if [[ "$action" == 9 ]]; then
+if [[ "$action" == 2 ]]; then
   if [[ -f "$backup/config.toml" ]]; then
     cp "$backup/config.toml" "$lock/config.toml"
     mv -f "$lock/config.toml" "$config"

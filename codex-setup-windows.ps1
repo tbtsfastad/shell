@@ -25,14 +25,14 @@ function Get-SetupItem {
 
 Write-Host 'Codex 配置管理（Windows）'
 Write-Host '1) 配置'
-Write-Host '9) 恢复'
-Write-Host '0) 退出'
-$choice = Read-Host '请选择 [1/9/0]'
+Write-Host '2) 恢复'
+Write-Host '3) 退出'
+$choice = Read-Host '请选择 [1/2/3]'
 switch ($choice) {
-    '0' { return }
     '1' { break }
-    '9' { break }
-    default { throw '请选择 1、9 或 0。' }
+    '2' { break }
+    '3' { return }
+    default { throw '请选择 1、2 或 3。' }
 }
 
 $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
@@ -106,7 +106,7 @@ try {
         $hadNoConfig = $null -ne (Get-SetupItem $noConfig)
     }
 
-    if ($choice -eq '9') {
+    if ($choice -eq '2') {
         if ($hasBackup) {
             [IO.File]::Copy($backupConfig, $tempConfig)
         }
