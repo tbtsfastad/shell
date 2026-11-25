@@ -3,7 +3,7 @@ set -eu
 
 command_url='https://raw.githubusercontent.com/tbtsfastad/shell/main/scripts/ts-and-cmd-mac'
 # Update the checksum in the same commit as changes to ts-and-cmd-mac.
-command_sha256='d478e04a4057c9fe91c745e2f6e32c21e5da78c0952a5a4b08c8bff3c8eef78d'
+command_sha256='fd300ba6bc0d571d67301d72969918aac5c354d2e0e38ecbcf32015730ad7324'
 path_setting='case "$PATH:" in "$HOME/.local/share/ts-and-cmd/bin:"*) ;; *) export PATH="$HOME/.local/share/ts-and-cmd/bin:$PATH" ;; esac'
 
 fail() {

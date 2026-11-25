@@ -237,7 +237,6 @@ start_app "$package"
 filter=$(app_log_filter "$package") || exit 1
 if [[ $log_start =~ ^[0-9]+$ ]]; then log_start="${log_start}.000"; else log_start=1; fi
 log_args=(-s "$selected" logcat -v threadtime -T "$log_start" "$filter")
-log_rows=0
 if [[ ! -t 0 ]] || ! terminal_state=$(/bin/stty -g 2>/dev/null); then
   printf '正在输出 %s 的日志，按 Ctrl+C 停止查看。\n' "$package"
   exec "$adb" "${log_args[@]}"
@@ -257,32 +256,63 @@ trap '
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-/usr/bin/perl -CSD -MTime::HiRes -e '
+redraw=0
+[[ ! -t 1 ]] || redraw=1
+/usr/bin/perl -CSD -Mutf8 -MEncode -MIO::Select -MTime::HiRes -e '
   my $rules = shift;
+  my $redraw = shift;
   $| = 1;
   my $pid = open my $logs, "-|", @ARGV;
   defined $pid or die "logcat: $!\n";
+  binmode $logs, ":raw";
+  my $ready = IO::Select->new($logs);
+  my $buffer = "";
+  my @history;
   my @words;
   my $revision = "";
   for my $signal (qw(INT TERM HUP)) {
     $SIG{$signal} = sub { kill "TERM", $pid; close $logs; exit 130; };
   }
-  while (my $line = <$logs>) {
+  sub show_log {
+    my ($line) = @_;
+    my $text = $line;
+    $text =~ s/^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+[VDIWEFA]\s+//;
+    print $line unless grep { index($text, $_) >= 0 } @words;
+  }
+  while (1) {
     my @info = Time::HiRes::stat($rules);
     my $changed = "$info[7]:$info[9]";
     if ($changed ne $revision) {
       open my $input, "<:encoding(UTF-8)", $rules or die "$rules: $!\n";
       @words = <$input>;
       chomp @words;
+      if ($revision ne "" || @words) {
+        if ($redraw) {
+          print "\e[H\e[2J\e[3J";
+          show_log($_) for @history;
+        }
+        print @words ? "日志过滤已更新。\n" : "已清除日志关键词过滤。\n";
+      }
       $revision = $changed;
     }
-    my $text = $line;
-    $text =~ s/^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+[VDIWEFA]\s+//;
-    print $line unless grep { index($text, $_) >= 0 } @words;
+    next unless $ready->can_read(0.1);
+    my $length = sysread($logs, my $chunk, 8192);
+    if (!defined $length) {
+      next if $!{EINTR};
+      die "logcat: $!\n";
+    }
+    last if $length == 0;
+    $buffer .= $chunk;
+    while ($buffer =~ s/\A([^\n]*\n)//) {
+      my $line = Encode::decode("UTF-8", $1);
+      push @history, $line if $redraw;
+      show_log($line);
+    }
   }
+  show_log(Encode::decode("UTF-8", $buffer)) if length $buffer;
   close $logs;
   exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
-' -- "$rules" "$adb" "${log_args[@]}" </dev/null &
+' -- "$rules" "$redraw" "$adb" "${log_args[@]}" </dev/null &
 log_pid=$!
 
 quoted_word='^-w[[:blank:]]+"([^"]+)"[[:blank:]]*$'
@@ -296,10 +326,8 @@ while kill -0 "$log_pid" 2>/dev/null; do
       if [[ $input =~ $quoted_word || $input =~ $plain_word ]]; then
         word="${BASH_REMATCH[1]}"
         printf '%s\n' "$word" >> "$rules"
-        printf '已过滤包含 %s 的日志。\n' "$word"
       elif [[ $input =~ ^-c[[:blank:]]*$ ]]; then
         : > "$rules"
-        printf '已清除日志关键词过滤。\n'
       else
         printf '%s\n' '用法 f -w "关键词" 或 f -c'
       fi

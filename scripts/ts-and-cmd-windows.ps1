@@ -106,6 +106,14 @@ function Get-AppLogFilter($Adb, $Serial, $Package) {
     return "--pid=$appPid"
 }
 
+function Show-LogLine($Line, $Words) {
+    $text = $Line -creplace '^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+[VDIWEFA]\s+', ''
+    foreach ($word in $Words) {
+        if ($text.Contains($word)) { return }
+    }
+    [Console]::WriteLine($Line)
+}
+
 if ($args.Count -ge 1 -and $args[0] -ceq '--version') {
     if ($args.Count -ne 1) { Stop-InvalidArguments '--version 不接受其他参数' }
     Write-Output "ts-and-cmd $version"
@@ -219,6 +227,8 @@ if ($interactive) {
 
 $logProcess = $null
 $words = [System.Collections.Generic.List[string]]::new()
+$redraw = $interactive -and ![Console]::IsOutputRedirected
+$history = [System.Collections.Generic.List[string]]::new()
 $filterInput = $null
 if ($interactive) { $controlCMode = [Console]::TreatControlCAsInput }
 try {
@@ -238,17 +248,27 @@ try {
                 if ($key -eq [char]13) {
                     Write-Host ''
                     $inputText = $filterInput.Trim()
+                    $filterInput = $null
                     if ($inputText -ceq '-c') {
                         $words.Clear()
-                        Write-Host '已清除日志关键词过滤。'
+                        $status = '已清除日志关键词过滤。'
                     } elseif ($inputText -cmatch '^-w[ \t]+"([^"]+)"$' -or $inputText -cmatch '^-w[ \t]+([^ \t"]+)$') {
-                        $word = $Matches[1]
-                        $words.Add($word)
-                        Write-Host "已过滤包含 $word 的日志。"
+                        $words.Add($Matches[1])
+                        $status = '日志过滤已更新。'
                     } else {
                         Write-Host '用法 f -w "关键词" 或 f -c'
+                        continue
                     }
-                    $filterInput = $null
+                    if ($redraw) {
+                        if ($Host.UI.SupportsVirtualTerminal) {
+                            $esc = [char]27
+                            [Console]::Write("$esc[H$esc[2J$esc[3J")
+                        } else {
+                            Clear-Host
+                        }
+                        foreach ($line in $history) { Show-LogLine $line $words }
+                    }
+                    Write-Host $status
                 } elseif ($key -eq [char]8 -and $filterInput.Length) {
                     $filterInput = $filterInput.Substring(0, $filterInput.Length - 1)
                     [Console]::Write("`b `b")
@@ -276,12 +296,8 @@ try {
         $line = $pending.GetAwaiter().GetResult()
         if ($null -eq $line) { break }
         $pending = $logProcess.StandardOutput.ReadLineAsync()
-        $text = $line -creplace '^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+[VDIWEFA]\s+', ''
-        $hidden = $false
-        foreach ($word in $words) {
-            if ($text.Contains($word)) { $hidden = $true; break }
-        }
-        if (!$hidden) { [Console]::WriteLine($line) }
+        if ($redraw) { $history.Add($line) }
+        Show-LogLine $line $words
     }
     $logProcess.WaitForExit()
     exit $logProcess.ExitCode
