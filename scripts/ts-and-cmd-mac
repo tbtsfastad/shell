@@ -5,12 +5,13 @@ version=0.3.0
 
 usage() {
   printf '%s\n' '用法 ts-and-cmd run [--debug] [设备序列号 | -d 设备序列号]' \
+    '     ts-and-cmd build <apk|appbundle> [--debug]' \
     '默认构建 Release，选择 adb devices 中第一台可用设备。' \
     '启动后持续输出应用日志。按 q 退出 App，按 Ctrl+C 仅停止查看。'
 }
 
 fail() {
-  printf 'ts-and-cmd run: %s\n' "$1" >&2
+  printf 'ts-and-cmd %s: %s\n' "$command" "$1" >&2
   exit 1
 }
 
@@ -119,7 +120,9 @@ app_log_filter() {
   printf '%s' "--pid=$app_pid"
 }
 
-case ${1:-} in
+command=${1:-}
+task_prefix=assemble
+case $command in
   --version)
     [[ $# == 1 ]] || argument_error '--version 不接受其他参数'
     printf 'ts-and-cmd %s\n' "$version"
@@ -127,17 +130,28 @@ case ${1:-} in
     ;;
   -h|--help) usage; exit 0 ;;
   run) shift ;;
-  *) argument_error '请输入 run 子命令' ;;
+  build)
+    shift
+    case ${1:-} in
+      -h|--help) usage; exit 0 ;;
+      apk) ;;
+      appbundle) task_prefix=bundle ;;
+      *) argument_error '请指定构建目标 apk 或 appbundle' ;;
+    esac
+    shift
+    ;;
+  *) argument_error '请输入 run 或 build 子命令' ;;
 esac
 
 variant=release
-task=:app:assembleRelease
+build_type=Release
 requested=''
 while (($#)); do
   case $1 in
     -h|--help) usage; exit 0 ;;
-    --debug) variant=debug; task=:app:assembleDebug ;;
+    --debug) variant=debug; build_type=Debug ;;
     -d|--device)
+      [[ $command == run ]] || argument_error "未知参数 $1"
       [[ $# -ge 2 && -n $2 && $2 != -* ]] || argument_error '请提供 ADB 设备序列号'
       [[ -z $requested ]] || argument_error '设备序列号只能指定一次'
       requested=$2
@@ -145,25 +159,29 @@ while (($#)); do
       ;;
     -*) argument_error "未知参数 $1" ;;
     *)
+      [[ $command == run ]] || argument_error "未知参数 $1"
       [[ -z $requested && -n $1 ]] || argument_error '请指定一个有效的设备序列号'
       requested=$1
       ;;
   esac
   shift
 done
+task=":app:${task_prefix}${build_type}"
 
 [[ -f gradlew ]] || fail '请在包含 gradlew 的 Android 工程根目录运行'
 sdk=$(sdk_directory) || fail '无法读取 local.properties 中的 sdk.dir'
 [[ -d $sdk ]] || fail "找不到 Android SDK（$sdk），请检查 sdk.dir 或 ANDROID_HOME"
-adb="$sdk/platform-tools/adb"
-[[ -x $adb ]] || fail "找不到 adb，请在 $sdk 安装 Android SDK Platform Tools"
-selected=$(select_device "$requested") || exit 1
+if [[ $command == run ]]; then
+  adb="$sdk/platform-tools/adb"
+  [[ -x $adb ]] || fail "找不到 adb，请在 $sdk 安装 Android SDK Platform Tools"
+  selected=$(select_device "$requested") || exit 1
 
-aapt2=''
-for tool in "$sdk"/build-tools/*/aapt2; do
-  [[ ! -x $tool ]] || aapt2=$tool
-done
-[[ -n $aapt2 ]] || fail "找不到 aapt2，请在 $sdk 安装 Android SDK Build Tools"
+  aapt2=''
+  for tool in "$sdk"/build-tools/*/aapt2; do
+    [[ ! -x $tool ]] || aapt2=$tool
+  done
+  [[ -n $aapt2 ]] || fail "找不到 aapt2，请在 $sdk 安装 Android SDK Build Tools"
+fi
 
 export ANDROID_HOME="$sdk"
 [[ -z ${ANDROID_SDK_ROOT+x} ]] || export ANDROID_SDK_ROOT="$sdk"
@@ -176,12 +194,17 @@ if [[ -z ${JAVA_HOME:-} ]]; then
   fi
 fi
 
-printf '设备 %s，构建 %s\n' "$selected" "$task"
+if [[ $command == run ]]; then
+  printf '设备 %s，构建 %s\n' "$selected" "$task"
+else
+  printf '构建 %s\n' "$task"
+fi
 if [[ -x gradlew ]]; then
   ./gradlew "$task" || fail 'Gradle 构建失败'
 else
   /bin/sh ./gradlew "$task" || fail 'Gradle 构建失败'
 fi
+[[ $command != build ]] || exit 0
 
 apk=$(find_apk "$variant") || exit 1
 badging=$("$aapt2" dump badging "$apk") || fail "无法读取 APK（$apk）"

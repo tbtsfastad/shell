@@ -3,6 +3,7 @@ $version = '0.3.0'
 
 function Show-Usage {
     Write-Host '用法 ts-and-cmd run [--debug] [设备序列号 | -d 设备序列号]'
+    Write-Host '     ts-and-cmd build <apk|appbundle> [--debug]'
     Write-Host '默认构建 Release，选择 adb devices 中第一台可用设备。'
     Write-Host '启动后持续输出应用日志。按 q 退出 App，按 Ctrl+C 仅停止查看。'
 }
@@ -107,19 +108,29 @@ if ($args.Count -ge 1 -and $args[0] -ceq '--version') {
     exit 0
 }
 if ($args.Count -ge 1 -and $args[0] -cin @('-h', '--help')) { Show-Usage; exit 0 }
-if ($args.Count -eq 0 -or $args[0] -cne 'run') { Stop-InvalidArguments '请输入 run 子命令' }
+if ($args.Count -eq 0 -or $args[0] -cnotin @('run', 'build')) { Stop-InvalidArguments '请输入 run 或 build 子命令' }
+$command = $args[0]
+$taskPrefix = 'assemble'
+$firstOption = 1
+if ($command -ceq 'build') {
+    if ($args[1] -cin @('-h', '--help')) { Show-Usage; exit 0 }
+    if ($args[1] -cnotin @('apk', 'appbundle')) { Stop-InvalidArguments '请指定构建目标 apk 或 appbundle' }
+    if ($args[1] -ceq 'appbundle') { $taskPrefix = 'bundle' }
+    $firstOption = 2
+}
 
 $variant = 'release'
-$task = ':app:assembleRelease'
+$buildType = 'Release'
 $requested = ''
-for ($index = 1; $index -lt $args.Count; $index++) {
+for ($index = $firstOption; $index -lt $args.Count; $index++) {
     $argument = $args[$index]
     if ($argument -cin @('-h', '--help')) { Show-Usage; exit 0 }
     if ($argument -ceq '--debug') {
         $variant = 'debug'
-        $task = ':app:assembleDebug'
+        $buildType = 'Debug'
         continue
     }
+    if ($command -ceq 'build') { Stop-InvalidArguments "未知参数 $argument" }
     if ($argument -cin @('-d', '--device')) {
         $index++
         if ($index -ge $args.Count -or $args[$index] -like '-*' -or !$args[$index]) {
@@ -132,6 +143,7 @@ for ($index = 1; $index -lt $args.Count; $index++) {
     if ($requested -or !$argument) { Stop-InvalidArguments '请指定一个有效的设备序列号' }
     $requested = $argument
 }
+$task = ":app:${taskPrefix}$buildType"
 
 try {
     $wrapper = Join-Path (Get-Location).ProviderPath 'gradlew.bat'
@@ -139,16 +151,18 @@ try {
     $sdk = Get-SdkDirectory
     if (!(Test-Path -LiteralPath $sdk -PathType Container)) { throw "找不到 Android SDK（$sdk），请检查 sdk.dir 或 ANDROID_HOME" }
     $sdk = (Get-Item -LiteralPath $sdk).FullName
-    $adb = Join-Path $sdk 'platform-tools/adb.exe'
-    if (!(Test-Path -LiteralPath $adb -PathType Leaf)) { throw "找不到 adb，请在 $sdk 安装 Android SDK Platform Tools" }
-    $serial = Select-Device $adb $requested
+    if ($command -ceq 'run') {
+        $adb = Join-Path $sdk 'platform-tools/adb.exe'
+        if (!(Test-Path -LiteralPath $adb -PathType Leaf)) { throw "找不到 adb，请在 $sdk 安装 Android SDK Platform Tools" }
+        $serial = Select-Device $adb $requested
 
-    $aapt2 = Get-ChildItem -LiteralPath (Join-Path $sdk 'build-tools') -Directory -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending |
-        ForEach-Object { Join-Path $_.FullName 'aapt2.exe' } |
-        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
-        Select-Object -First 1
-    if (!$aapt2) { throw "找不到 aapt2，请在 $sdk 安装 Android SDK Build Tools" }
+        $aapt2 = Get-ChildItem -LiteralPath (Join-Path $sdk 'build-tools') -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName 'aapt2.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+        if (!$aapt2) { throw "找不到 aapt2，请在 $sdk 安装 Android SDK Build Tools" }
+    }
 
     $env:ANDROID_HOME = $sdk
     if (Test-Path Env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT = $sdk }
@@ -160,9 +174,10 @@ try {
         $env:JAVA_HOME = $studioJdk
     }
 
-    Write-Host "设备 $serial，构建 $task"
+    if ($command -ceq 'run') { Write-Host "设备 $serial，构建 $task" } else { Write-Host "构建 $task" }
     & $wrapper $task
     if ($LASTEXITCODE -ne 0) { throw "Gradle 构建失败（退出码 $LASTEXITCODE）" }
+    if ($command -ceq 'build') { exit 0 }
 
     $apk = Get-BuiltApk $variant
     $badging = (& $aapt2 dump badging $apk) -join "`n"
@@ -180,7 +195,7 @@ try {
     $filter = Get-AppLogFilter $adb $serial $package
     $logStart = if ($logStart -match '^[0-9]+$') { "${logStart}.000" } else { '1' }
 } catch {
-    [Console]::Error.WriteLine("ts-and-cmd run: $($_.Exception.Message)")
+    [Console]::Error.WriteLine("ts-and-cmd ${command}: $($_.Exception.Message)")
     exit 1
 }
 
