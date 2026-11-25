@@ -4,10 +4,10 @@ set -o pipefail
 version=0.3.0
 
 usage() {
-  printf '%s\n' '用法 ts-and-cmd run [--debug] [设备序列号 | -d 设备序列号]' \
+  printf '%s\n' '用法 ts-and-cmd run [--debug] [-d 设备序列号]' \
     '     ts-and-cmd build <apk|appbundle> [--debug]' \
     '默认构建 Release，选择 adb devices 中第一台可用设备。' \
-    '启动后持续输出应用日志。按 q 退出 App，按 Ctrl+C 仅停止查看。'
+    '启动后持续输出应用日志。按 f 过滤日志，按 q 退出 App，按 Ctrl+C 仅停止查看。'
 }
 
 fail() {
@@ -52,13 +52,13 @@ select_device() {
 }
 
 find_apk() {
-  local variant=$1 metadata directory name
+  local variant=$1 mode=${2:-install} metadata directory names name
   directory="app/build/outputs/apk/$variant"
   metadata="$directory/output-metadata.json"
   [[ -f $metadata ]] || fail "找不到 APK 构建信息（${metadata}）"
-  name=$(/usr/bin/perl -Mutf8 -MJSON::PP -CS -e '
+  names=$(/usr/bin/perl -Mutf8 -MJSON::PP -CS -e '
     use strict;
-    my ($path, $variant) = @ARGV;
+    my ($path, $variant, $mode) = @ARGV;
     open my $file, "<:raw", $path or die "$!\n";
     local $/;
     my $data = decode_json(<$file>);
@@ -67,14 +67,21 @@ find_apk() {
     $built_variant eq $variant or die "构建变体为 $built_variant，预期为 $variant\n";
 
     my @artifacts = @{$data->{elements}};
-    @artifacts = grep { ref($_) eq "HASH" && ref($_->{filters}) eq "ARRAY" && !@{$_->{filters}} } @artifacts
-      if @artifacts != 1;
-    @artifacts == 1 && ref($artifacts[0]) eq "HASH" && $artifacts[0]->{outputFile}
-      or die "未找到唯一可安装的 APK\n";
-    print $artifacts[0]->{outputFile};
-  ' "$metadata" "$variant" 2>&1) || fail "无法从 ${metadata} 定位 APK。$name"
-  [[ -f $directory/$name ]] || fail "找不到 Gradle 生成的 APK（${directory}/${name}）"
-  printf '%s' "$directory/$name"
+    if ($mode eq "install") {
+      @artifacts = grep { ref($_) eq "HASH" && ref($_->{filters}) eq "ARRAY" && !@{$_->{filters}} } @artifacts
+        if @artifacts != 1;
+      @artifacts == 1 or die "未找到唯一可安装的 APK\n";
+    }
+    @artifacts or die "未找到 APK 产物\n";
+    for my $artifact (@artifacts) {
+      ref($artifact) eq "HASH" && $artifact->{outputFile} or die "APK 构建信息格式无效\n";
+      print "$artifact->{outputFile}\n";
+    }
+  ' "$metadata" "$variant" "$mode" 2>&1) || fail "无法从 ${metadata} 定位 APK。$names"
+  while IFS= read -r name; do
+    [[ -f $directory/$name ]] || fail "找不到 Gradle 生成的 APK（${directory}/${name}）"
+    printf '%s\n' "$PWD/$directory/$name"
+  done <<< "$names"
 }
 
 start_app() {
@@ -150,19 +157,14 @@ while (($#)); do
   case $1 in
     -h|--help) usage; exit 0 ;;
     --debug) variant=debug; build_type=Debug ;;
-    -d|--device)
+    -d)
       [[ $command == run ]] || argument_error "未知参数 $1"
       [[ $# -ge 2 && -n $2 && $2 != -* ]] || argument_error '请提供 ADB 设备序列号'
       [[ -z $requested ]] || argument_error '设备序列号只能指定一次'
       requested=$2
       shift
       ;;
-    -*) argument_error "未知参数 $1" ;;
-    *)
-      [[ $command == run ]] || argument_error "未知参数 $1"
-      [[ -z $requested && -n $1 ]] || argument_error '请指定一个有效的设备序列号'
-      requested=$1
-      ;;
+    *) argument_error "未知参数 $1" ;;
   esac
   shift
 done
@@ -204,7 +206,22 @@ if [[ -x gradlew ]]; then
 else
   /bin/sh ./gradlew "$task" || fail 'Gradle 构建失败'
 fi
-[[ $command != build ]] || exit 0
+if [[ $command == build ]]; then
+  if [[ $task_prefix == assemble ]]; then
+    artifacts=$(find_apk "$variant" all) || exit 1
+    while IFS= read -r artifact; do
+      printf '构建产物 %s\n' "$artifact"
+    done <<< "$artifacts"
+  else
+    directory="$PWD/app/build/outputs/bundle/$variant"
+    artifacts=("$directory"/*.aab)
+    [[ -f ${artifacts[0]} ]] || fail "找不到 Gradle 生成的 AAB（${directory}）"
+    for artifact in "${artifacts[@]}"; do
+      [[ ! -f $artifact ]] || printf '构建产物 %s\n' "$artifact"
+    done
+  fi
+  exit 0
+fi
 
 apk=$(find_apk "$variant") || exit 1
 badging=$("$aapt2" dump badging "$apk") || fail "无法读取 APK（$apk）"
@@ -220,72 +237,78 @@ start_app "$package"
 filter=$(app_log_filter "$package") || exit 1
 if [[ $log_start =~ ^[0-9]+$ ]]; then log_start="${log_start}.000"; else log_start=1; fi
 log_args=(-s "$selected" logcat -v threadtime -T "$log_start" "$filter")
-log_width=0
-if [[ -t 1 ]]; then
-  read -r _ log_width < <(/bin/stty size 2>/dev/null </dev/tty) || log_width=0
-fi
-log_reader=(/usr/bin/perl -CSD -e '
-  my $width = shift;
-  $| = 1;
-  my $pid = open my $logs, "-|", @ARGV;
-  defined $pid or die "logcat: $!\n";
-  my ($first, $last, $count);
-  sub show {
-    return unless defined $first;
-    my ($preview) = @_;
-    my $text = "[$count] $first";
-    if ($width > 1) {
-      print "\r\e[K";
-      if ($preview) {
-        my $limit = $text =~ /[^\x00-\x7f]/ ? int(($width - 1) / 2) : $width - 1;
-        print substr($text, 0, $limit);
-        return;
-      }
-    }
-    print "$text\n";
-  }
-  for my $signal (qw(INT TERM HUP)) {
-    $SIG{$signal} = sub { show(0); kill "TERM", $pid; close $logs; exit 130; };
-  }
-  while (my $line = <$logs>) {
-    $line =~ s/\r?\n$//;
-    my ($key) = $line =~ /^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+([VDIWEFA]\s+.*)$/;
-    if (!defined $key || !defined $last || $key ne $last) {
-      show(0);
-      if (!defined $key) { print "$line\n"; undef $first; undef $last; next; }
-      ($first, $last, $count) = ($line, $key, 0);
-    }
-    ++$count;
-    show(1) if $width > 1;
-  }
-  show(0);
-  close $logs;
-  exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
-' -- "$log_width" "$adb" "${log_args[@]}")
+log_rows=0
 if [[ ! -t 0 ]] || ! terminal_state=$(/bin/stty -g 2>/dev/null); then
   printf '正在输出 %s 的日志，按 Ctrl+C 停止查看。\n' "$package"
-  exec "${log_reader[@]}"
+  exec "$adb" "${log_args[@]}"
 fi
 
-printf '正在输出 %s 的日志。按 q 退出 App，按 Ctrl+C 仅停止查看。\n' "$package"
-"${log_reader[@]}" </dev/null &
-log_pid=$!
+printf '正在输出 %s 的日志。按 f 过滤日志，按 q 退出 App，按 Ctrl+C 仅停止查看。\n' "$package"
+rules=$(mktemp) || fail '无法创建日志过滤文件'
+log_pid=''
 trap '
   /bin/stty "$terminal_state" 2>/dev/null
   if [[ -n $log_pid ]]; then
     kill "$log_pid" 2>/dev/null
     wait "$log_pid" 2>/dev/null
   fi
+  rm -f -- "$rules"
 ' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
+/usr/bin/perl -CSD -MTime::HiRes -e '
+  my $rules = shift;
+  $| = 1;
+  my $pid = open my $logs, "-|", @ARGV;
+  defined $pid or die "logcat: $!\n";
+  my @words;
+  my $revision = "";
+  for my $signal (qw(INT TERM HUP)) {
+    $SIG{$signal} = sub { kill "TERM", $pid; close $logs; exit 130; };
+  }
+  while (my $line = <$logs>) {
+    my @info = Time::HiRes::stat($rules);
+    my $changed = "$info[7]:$info[9]";
+    if ($changed ne $revision) {
+      open my $input, "<:encoding(UTF-8)", $rules or die "$rules: $!\n";
+      @words = <$input>;
+      chomp @words;
+      $revision = $changed;
+    }
+    my $text = $line;
+    $text =~ s/^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+[VDIWEFA]\s+//;
+    print $line unless grep { index($text, $_) >= 0 } @words;
+  }
+  close $logs;
+  exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
+' -- "$rules" "$adb" "${log_args[@]}" </dev/null &
+log_pid=$!
 
+quoted_word='^-w[[:blank:]]+"([^"]+)"[[:blank:]]*$'
+plain_word='^-w[[:blank:]]+([^[:blank:]"]+)[[:blank:]]*$'
 while kill -0 "$log_pid" 2>/dev/null; do
-  if IFS= read -rsn 1 -t 1 key && [[ $key == q ]]; then
-    "$adb" -s "$selected" shell am force-stop --user current "$package" || fail "无法退出 $package"
-    exit 0
-  fi
+  IFS= read -rsn 1 -t 1 key || continue
+  case $key in
+    f)
+      IFS= read -er -p 'f ' input || continue
+      input="${input#"${input%%[![:blank:]]*}"}"
+      if [[ $input =~ $quoted_word || $input =~ $plain_word ]]; then
+        word="${BASH_REMATCH[1]}"
+        printf '%s\n' "$word" >> "$rules"
+        printf '已过滤包含 %s 的日志。\n' "$word"
+      elif [[ $input =~ ^-c[[:blank:]]*$ ]]; then
+        : > "$rules"
+        printf '已清除日志关键词过滤。\n'
+      else
+        printf '%s\n' '用法 f -w "关键词" 或 f -c'
+      fi
+      ;;
+    q)
+      "$adb" -s "$selected" shell am force-stop --user current "$package" || fail "无法退出 $package"
+      exit 0
+      ;;
+  esac
 done
 
 wait "$log_pid"

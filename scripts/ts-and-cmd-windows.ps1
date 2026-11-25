@@ -2,10 +2,10 @@
 $version = '0.3.0'
 
 function Show-Usage {
-    Write-Host '用法 ts-and-cmd run [--debug] [设备序列号 | -d 设备序列号]'
+    Write-Host '用法 ts-and-cmd run [--debug] [-d 设备序列号]'
     Write-Host '     ts-and-cmd build <apk|appbundle> [--debug]'
     Write-Host '默认构建 Release，选择 adb devices 中第一台可用设备。'
-    Write-Host '启动后持续输出应用日志。按 q 退出 App，按 Ctrl+C 仅停止查看。'
+    Write-Host '启动后持续输出应用日志。按 f 过滤日志，按 q 退出 App，按 Ctrl+C 仅停止查看。'
 }
 
 function Stop-InvalidArguments($Message) {
@@ -47,7 +47,7 @@ function Select-Device($Adb, $Requested) {
     throw "ADB 没有可用设备。`n$($output -join "`n")"
 }
 
-function Get-BuiltApk($Variant) {
+function Get-BuiltApk($Variant, [switch]$All) {
     $directory = Join-Path (Get-Location).ProviderPath "app/build/outputs/apk/$Variant"
     $metadata = Join-Path $directory 'output-metadata.json'
     if (!(Test-Path -LiteralPath $metadata -PathType Leaf)) { throw "找不到 APK 构建信息（$metadata）" }
@@ -56,13 +56,17 @@ function Get-BuiltApk($Variant) {
     if ($data.variantName -cne $Variant) { throw "构建变体为 $($data.variantName)，预期为 $Variant" }
 
     $artifacts = $data.elements
-    if ($artifacts.Count -ne 1) {
+    if (!$All -and $artifacts.Count -ne 1) {
         $artifacts = @($artifacts | Where-Object { $_.filters -is [Array] -and $_.filters.Count -eq 0 })
     }
-    if ($artifacts.Count -ne 1 -or !$artifacts[0].outputFile) { throw '未找到唯一可安装的 APK' }
-    $apk = Join-Path $directory $artifacts[0].outputFile
-    if (!(Test-Path -LiteralPath $apk -PathType Leaf)) { throw "找不到 Gradle 生成的 APK（$apk）" }
-    return $apk
+    if (!$All -and $artifacts.Count -ne 1) { throw '未找到唯一可安装的 APK' }
+    if (!$artifacts.Count) { throw '未找到 APK 产物' }
+    foreach ($artifact in $artifacts) {
+        if (!$artifact.outputFile) { throw "APK 构建信息格式无效（$metadata）" }
+        $apk = Join-Path $directory $artifact.outputFile
+        if (!(Test-Path -LiteralPath $apk -PathType Leaf)) { throw "找不到 Gradle 生成的 APK（$apk）" }
+        Write-Output $apk
+    }
 }
 
 function Start-App($Adb, $Serial, $Package) {
@@ -130,18 +134,13 @@ for ($index = $firstOption; $index -lt $args.Count; $index++) {
         $buildType = 'Debug'
         continue
     }
-    if ($command -ceq 'build') { Stop-InvalidArguments "未知参数 $argument" }
-    if ($argument -cin @('-d', '--device')) {
-        $index++
-        if ($index -ge $args.Count -or $args[$index] -like '-*' -or !$args[$index]) {
-            Stop-InvalidArguments '请提供 ADB 设备序列号'
-        }
-        $argument = $args[$index]
-    } elseif ($argument -like '-*') {
-        Stop-InvalidArguments "未知参数 $argument"
+    if ($command -cne 'run' -or $argument -cne '-d') { Stop-InvalidArguments "未知参数 $argument" }
+    $index++
+    if ($index -ge $args.Count -or $args[$index] -like '-*' -or !$args[$index]) {
+        Stop-InvalidArguments '请提供 ADB 设备序列号'
     }
-    if ($requested -or !$argument) { Stop-InvalidArguments '请指定一个有效的设备序列号' }
-    $requested = $argument
+    if ($requested) { Stop-InvalidArguments '设备序列号只能指定一次' }
+    $requested = $args[$index]
 }
 $task = ":app:${taskPrefix}$buildType"
 
@@ -177,7 +176,18 @@ try {
     if ($command -ceq 'run') { Write-Host "设备 $serial，构建 $task" } else { Write-Host "构建 $task" }
     & $wrapper $task
     if ($LASTEXITCODE -ne 0) { throw "Gradle 构建失败（退出码 $LASTEXITCODE）" }
-    if ($command -ceq 'build') { exit 0 }
+    if ($command -ceq 'build') {
+        if ($taskPrefix -ceq 'assemble') {
+            $artifacts = @(Get-BuiltApk $variant -All)
+        } else {
+            $directory = Join-Path (Get-Location).ProviderPath "app/build/outputs/bundle/$variant"
+            if (!(Test-Path -LiteralPath $directory -PathType Container)) { throw "找不到 Gradle 生成的 AAB（$directory）" }
+            $artifacts = @(Get-ChildItem -LiteralPath $directory -Filter '*.aab' -File | ForEach-Object { $_.FullName })
+            if (!$artifacts.Count) { throw "找不到 Gradle 生成的 AAB（$directory）" }
+        }
+        foreach ($artifact in $artifacts) { Write-Host "构建产物 $artifact" }
+        exit 0
+    }
 
     $apk = Get-BuiltApk $variant
     $badging = (& $aapt2 dump badging $apk) -join "`n"
@@ -201,17 +211,15 @@ try {
 
 $logArgs = @('-s', $serial, 'logcat', '-v', 'threadtime', '-T', $logStart, $filter)
 $interactive = ![Console]::IsInputRedirected
-$logWidth = if ([Console]::IsOutputRedirected) { 0 } else { [Console]::WindowWidth }
 if ($interactive) {
-    Write-Host "正在输出 $package 的日志。按 q 退出 App，按 Ctrl+C 仅停止查看。"
+    Write-Host "正在输出 $package 的日志。按 f 过滤日志，按 q 退出 App，按 Ctrl+C 仅停止查看。"
 } else {
     Write-Host "正在输出 $package 的日志，按 Ctrl+C 停止查看。"
 }
 
 $logProcess = $null
-$first = $null
-$lastKey = $null
-$repeat = 0
+$words = [System.Collections.Generic.List[string]]::new()
+$filterInput = $null
 if ($interactive) { $controlCMode = [Console]::TreatControlCAsInput }
 try {
     if ($interactive) { [Console]::TreatControlCAsInput = $true }
@@ -226,37 +234,54 @@ try {
         if ($interactive -and [Console]::KeyAvailable) {
             $key = [Console]::ReadKey($true).KeyChar
             if ($key -eq [char]3) { exit 130 }
+            if ($null -ne $filterInput) {
+                if ($key -eq [char]13) {
+                    Write-Host ''
+                    $inputText = $filterInput.Trim()
+                    if ($inputText -ceq '-c') {
+                        $words.Clear()
+                        Write-Host '已清除日志关键词过滤。'
+                    } elseif ($inputText -cmatch '^-w[ \t]+"([^"]+)"$' -or $inputText -cmatch '^-w[ \t]+([^ \t"]+)$') {
+                        $word = $Matches[1]
+                        $words.Add($word)
+                        Write-Host "已过滤包含 $word 的日志。"
+                    } else {
+                        Write-Host '用法 f -w "关键词" 或 f -c'
+                    }
+                    $filterInput = $null
+                } elseif ($key -eq [char]8 -and $filterInput.Length) {
+                    $filterInput = $filterInput.Substring(0, $filterInput.Length - 1)
+                    [Console]::Write("`b `b")
+                } elseif (![char]::IsControl($key)) {
+                    $filterInput += $key
+                    [Console]::Write($key)
+                }
+                continue
+            }
+            if ($key -ceq 'f') {
+                $filterInput = ''
+                Write-Host 'f ' -NoNewline
+                continue
+            }
             if ($key -ceq 'q') {
                 & $adb -s $serial shell am force-stop --user current $package
                 if ($LASTEXITCODE -ne 0) { throw "无法退出 $package" }
                 exit 0
             }
         }
-        if (!$pending.IsCompleted) {
+        if ($null -ne $filterInput -or !$pending.IsCompleted) {
             Start-Sleep -Milliseconds 100
             continue
         }
         $line = $pending.GetAwaiter().GetResult()
         if ($null -eq $line) { break }
         $pending = $logProcess.StandardOutput.ReadLineAsync()
-        $logKey = if ($line -cmatch '^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+([VDIWEFA]\s+.*)$') { $Matches[1] } else { $null }
-        if ($null -eq $logKey -or $logKey -cne $lastKey) {
-            if ($null -ne $first) {
-                if ($logWidth -gt 1) { [Console]::Write("`r") }
-                [Console]::WriteLine("[$repeat] $first")
-            }
-            $first = $null
-            $lastKey = $logKey
-            if ($null -eq $logKey) { [Console]::WriteLine($line); continue }
-            $first = $line
-            $repeat = 0
+        $text = $line -creplace '^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+[VDIWEFA]\s+', ''
+        $hidden = $false
+        foreach ($word in $words) {
+            if ($text.Contains($word)) { $hidden = $true; break }
         }
-        $repeat++
-        if ($logWidth -gt 1) {
-            $preview = "[$repeat] $first"
-            $limit = if ($preview -match '[^\x00-\x7f]') { [int][Math]::Floor(($logWidth - 1) / 2) } else { $logWidth - 1 }
-            [Console]::Write("`r" + $preview.Substring(0, [Math]::Min($limit, $preview.Length)))
-        }
+        if (!$hidden) { [Console]::WriteLine($line) }
     }
     $logProcess.WaitForExit()
     exit $logProcess.ExitCode
@@ -265,10 +290,6 @@ try {
     exit 1
 } finally {
     if ($interactive) { [Console]::TreatControlCAsInput = $controlCMode }
-    if ($null -ne $first) {
-        if ($logWidth -gt 1) { [Console]::Write("`r") }
-        [Console]::WriteLine("[$repeat] $first")
-    }
     if ($logProcess) {
         if (!$logProcess.HasExited) { Stop-Process -InputObject $logProcess -ErrorAction SilentlyContinue }
         $logProcess.Dispose()

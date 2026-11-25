@@ -24,19 +24,33 @@ curl -fsSL https://raw.githubusercontent.com/tbtsfastad/shell/refs/heads/main/sc
 
 在 Android 工程根目录执行。
 
+### 运行 App
+
 ```sh
-ts-and-cmd run                  # Release，第一台可用设备
-ts-and-cmd run xxxx             # Release，指定设备
-ts-and-cmd run --debug -d xxxx  # Debug，指定设备
-ts-and-cmd run --help           # 查看用法
+ts-and-cmd run
+ts-and-cmd run --debug -d xxxx
 ```
 
-App 启动后会持续输出应用日志。按 `q` 停止日志并退出 App，无需回车。按 `Ctrl+C` 只停止查看日志，App 继续运行。
-连续重复的日志会合并，行首的 `[数字]` 表示出现次数。
+| 参数 | 作用 | 省略时 |
+| --- | --- | --- |
+| `--debug` | 构建并运行 Debug 版本 | Release |
+| `-d <序列号>` | 指定 ADB 设备 | `adb devices` 列出的第一台可用设备 |
+| `-h`、`--help` | 显示用法 | 正常执行命令 |
+
+#### 日志操作
+
+App 启动后会持续输出应用日志。
+
+| 输入 | 操作方式 | 作用 |
+| --- | --- | --- |
+| `q` | 直接按键 | 停止日志并退出 App |
+| `Ctrl+C` | 直接按键 | 停止查看日志，App 继续运行 |
+| `f -w "关键词"` | 输入后回车 | 隐藏后续包含该关键词的日志，可多次添加 |
+| `f -c` | 输入后回车 | 清除所有关键词过滤 |
 
 ### 仅构建
 
-在 Android 工程根目录执行。默认构建 Release，加 `--debug` 构建 Debug。构建无需连接设备。
+构建无需连接设备。构建成功后会列出产物的绝对路径。
 
 ```sh
 ts-and-cmd build apk
@@ -44,3 +58,9 @@ ts-and-cmd build apk --debug
 ts-and-cmd build appbundle
 ts-and-cmd build appbundle --debug
 ```
+
+| 参数 | 作用 | 省略时 |
+| --- | --- | --- |
+| `apk` / `appbundle` | 选择构建 APK 或 AAB | 必选其一 |
+| `--debug` | 构建 Debug 版本 | Release |
+| `-h`、`--help` | 显示用法 | 正常执行命令 |
