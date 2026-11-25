@@ -5,7 +5,7 @@ function Show-Usage {
     Write-Host '用法 ts-and-cmd run [--debug] [-d 设备序列号]'
     Write-Host '     ts-and-cmd build <apk|appbundle> [--debug]'
     Write-Host '默认构建 Release，选择 adb devices 中第一台可用设备。'
-    Write-Host '启动后持续输出应用日志。按 f 过滤日志，按 q 退出 App。'
+    Write-Host '启动后持续输出应用日志。输入 f 命令过滤日志，输入 q 退出 App，均需回车。'
 }
 
 function Stop-InvalidArguments($Message) {
@@ -224,7 +224,7 @@ try {
 $logArgs = @('-s', $serial, 'logcat', '-v', 'threadtime', '-T', $logStart, $filter)
 $interactive = ![Console]::IsInputRedirected
 if ($interactive) {
-    Write-Host "正在输出 $package 的日志。按 f 过滤日志，按 q 退出 App。"
+    Write-Host "正在输出 $package 的日志。输入 f 命令过滤日志，输入 q 退出 App，均需回车。"
 } else {
     Write-Host "正在输出 $package 的日志。"
 }
@@ -233,7 +233,7 @@ $logProcess = $null
 $words = [System.Collections.Generic.List[string]]::new()
 $redraw = $interactive -and ![Console]::IsOutputRedirected
 $history = [System.Collections.Generic.List[string]]::new()
-$filterInput = $null
+$commandInput = $null
 if ($interactive) { $controlCMode = [Console]::TreatControlCAsInput }
 try {
     if ($interactive) { [Console]::TreatControlCAsInput = $true }
@@ -248,19 +248,24 @@ try {
         if ($interactive -and [Console]::KeyAvailable) {
             $key = [Console]::ReadKey($true).KeyChar
             if ($key -eq [char]3) { exit 130 }
-            if ($null -ne $filterInput) {
+            if ($null -ne $commandInput) {
                 if ($key -eq [char]13 -or $key -eq [char]10) {
                     Write-Host ''
-                    $inputText = $filterInput.Trim()
-                    $filterInput = $null
-                    if ($inputText -ceq '-c') {
+                    $inputText = $commandInput.Trim()
+                    $commandInput = $null
+                    if ($inputText -ceq 'q') {
+                        & $adb -s $serial shell am force-stop --user current $package
+                        if ($LASTEXITCODE -ne 0) { throw "无法退出 $package" }
+                        exit 0
+                    }
+                    if ($inputText -cmatch '^f[ \t]+-c$') {
                         $words.Clear()
                         $status = '已清除日志关键词过滤。'
-                    } elseif ($inputText -cmatch '^-w[ \t]+"([^"]+)"$' -or $inputText -cmatch '^-w[ \t]+([^ \t"]+)$') {
-                        $words.Add($Matches[1])
+                    } elseif ($inputText -cmatch '^f[ \t]+-w[ \t]+(?:"([^"]+)"|([^ \t"]+))$') {
+                        if ($Matches.ContainsKey(1)) { $words.Add($Matches[1]) } else { $words.Add($Matches[2]) }
                         $status = '日志过滤已更新。'
                     } else {
-                        Write-Host '用法 f -w "关键词" 或 f -c'
+                        Write-Host '用法 f -w "关键词"、f -c 或 q，输入后回车。'
                         continue
                     }
                     if ($redraw) {
@@ -273,24 +278,22 @@ try {
                         foreach ($line in $history) { Show-LogLine $line $words }
                     }
                     Write-Host $status
-                } elseif ($key -eq [char]8 -and $filterInput.Length) {
-                    $filterInput = $filterInput.Substring(0, $filterInput.Length - 1)
+                } elseif ($key -eq [char]27) {
+                    Write-Host ''
+                    $commandInput = $null
+                } elseif ($key -eq [char]8 -and $commandInput.Length) {
+                    $commandInput = $commandInput.Substring(0, $commandInput.Length - 1)
                     [Console]::Write("`b `b")
                 } elseif (![char]::IsControl($key)) {
-                    $filterInput += $key
+                    $commandInput += $key
                     [Console]::Write($key)
                 }
                 continue
             }
-            if ($key -ceq 'f') {
-                $filterInput = ''
-                Write-Host 'f ' -NoNewline
+            if ($key -ceq 'f' -or $key -ceq 'q') {
+                $commandInput = if ($key -ceq 'f') { 'f ' } else { 'q' }
+                Write-Host $commandInput -NoNewline
                 continue
-            }
-            if ($key -ceq 'q') {
-                & $adb -s $serial shell am force-stop --user current $package
-                if ($LASTEXITCODE -ne 0) { throw "无法退出 $package" }
-                exit 0
             }
         }
         if (!$pending.IsCompleted) {
@@ -302,7 +305,7 @@ try {
         $pending = $logProcess.StandardOutput.ReadLineAsync()
         if ($redraw) { $history.Add($line) }
         $prompt = $null
-        if ($redraw -and $null -ne $filterInput) { $prompt = "f $filterInput" }
+        if ($redraw) { $prompt = $commandInput }
         Show-LogLine $line $words $prompt
     }
     $logProcess.WaitForExit()

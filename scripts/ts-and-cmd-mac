@@ -7,7 +7,7 @@ usage() {
   printf '%s\n' '用法 ts-and-cmd run [--debug] [-d 设备序列号]' \
     '     ts-and-cmd build <apk|appbundle> [--debug]' \
     '默认构建 Release，选择 adb devices 中第一台可用设备。' \
-    '启动后持续输出应用日志。按 f 过滤日志，按 q 退出 App。'
+    '启动后持续输出应用日志。输入 f 命令过滤日志，输入 q 退出 App，均需回车。'
 }
 
 fail() {
@@ -242,8 +242,7 @@ if [[ ! -t 0 ]] || ! terminal_state=$(/bin/stty -g 2>/dev/null); then
   exec "$adb" "${log_args[@]}"
 fi
 
-printf '正在输出 %s 的日志。按 f 过滤日志，按 q 退出 App。\n' "$package"
-rules=$(mktemp) || fail '无法创建日志过滤文件'
+printf '正在输出 %s 的日志。输入 f 命令过滤日志，输入 q 退出 App，均需回车。\n' "$package"
 log_pid=''
 trap '
   /bin/stty "$terminal_state" 2>/dev/null
@@ -251,94 +250,127 @@ trap '
     kill "$log_pid" 2>/dev/null
     wait "$log_pid" 2>/dev/null
   fi
-  rm -f -- "$rules"
 ' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-redraw=0
-[[ ! -t 1 ]] || redraw=1
-/usr/bin/perl -CSD -Mutf8 -MEncode -MIO::Select -MTime::HiRes -e '
-  my $rules = shift;
-  my $redraw = shift;
+/bin/stty -icanon -echo min 1 time 0 || fail '无法读取终端按键'
+/usr/bin/perl -CSD -Mutf8 -MEncode -MIO::Select -e '
+  my ($package, $adb, $serial) = splice @ARGV, 0, 3;
+  my $redraw = -t STDOUT;
+  my $terminal = $redraw ? \*STDOUT : \*STDERR;
   $| = 1;
-  my $pid = open my $logs, "-|", @ARGV;
+  my $pid = open my $logs, "-|";
   defined $pid or die "logcat: $!\n";
+  if (!$pid) {
+    open STDIN, "<", "/dev/null" or die "$!\n";
+    exec $adb, "-s", $serial, @ARGV or die "logcat: $!\n";
+  }
+  binmode STDIN, ":raw";
   binmode $logs, ":raw";
-  my $ready = IO::Select->new($logs);
+  my $ready = IO::Select->new(\*STDIN, $logs);
   my $buffer = "";
+  my $keys = "";
   my @history;
   my @words;
-  my $revision = "";
+  my $input;
   for my $signal (qw(INT TERM HUP)) {
     $SIG{$signal} = sub { kill "TERM", $pid; close $logs; exit 130; };
   }
-  sub show_log {
+  sub visible {
     my ($line) = @_;
-    my $text = $line;
-    $text =~ s/^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+[VDIWEFA]\s+//;
-    print $line unless grep { index($text, $_) >= 0 } @words;
+    $line =~ s/^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+[VDIWEFA]\s+//;
+    return !grep { index($line, $_) >= 0 } @words;
   }
-  while (1) {
-    my @info = Time::HiRes::stat($rules);
-    my $changed = "$info[7]:$info[9]";
-    if ($changed ne $revision) {
-      open my $input, "<:encoding(UTF-8)", $rules or die "$rules: $!\n";
-      @words = <$input>;
-      chomp @words;
-      if ($revision ne "" || @words) {
-        if ($redraw) {
-          print "\e[H\e[2J\e[3J";
-          show_log($_) for @history;
-        }
-        print @words ? "日志过滤已更新。\n" : "已清除日志关键词过滤。\n";
+  sub prompt {
+    print {$terminal} "\r\e[K$input";
+  }
+  sub submit_command {
+    my $command = $input;
+    undef $input;
+    print {$terminal} "\r\e[K";
+    my $status;
+    if ($command =~ /^[ \t]*q[ \t]*\z/) {
+      my $status = system($adb, "-s", $serial, "shell", "am", "force-stop", "--user", "current", $package);
+      kill "TERM", $pid;
+      close $logs;
+      die "无法退出 $package\n" if $status != 0;
+      exit 0;
+    }
+    if ($command =~ /^f[ \t]+-w[ \t]+(?:"([^"]+)"|([^ \t"]+))[ \t]*\z/) {
+      push @words, defined $1 ? $1 : $2;
+      $status = "日志过滤已更新。";
+    } elsif ($command =~ /^f[ \t]+-c[ \t]*\z/) {
+      @words = ();
+      $status = "已清除日志关键词过滤。";
+    } else {
+      print {$terminal} "用法 f -w \"关键词\"、f -c 或 q，输入后回车。\n";
+      return;
+    }
+    if ($redraw) {
+      print "\e[H\e[2J\e[3J";
+      for my $line (@history) {
+        print $line if visible($line);
       }
-      $revision = $changed;
     }
-    next unless $ready->can_read(0.1);
-    my $length = sysread($logs, my $chunk, 8192);
-    if (!defined $length) {
-      next if $!{EINTR};
-      die "logcat: $!\n";
-    }
-    last if $length == 0;
-    $buffer .= $chunk;
-    while ($buffer =~ s/\A([^\n]*\n)//) {
-      my $line = Encode::decode("UTF-8", $1);
-      push @history, $line if $redraw;
-      show_log($line);
+    print {$terminal} "$status\n";
+  }
+  while ($ready->exists($logs)) {
+    for my $stream ($ready->can_read()) {
+      my $length = sysread($stream, my $chunk, 8192);
+      if (!defined $length) {
+        next if $!{EINTR};
+        die "$!\n";
+      }
+      if ($length == 0) {
+        $ready->remove($stream);
+        next;
+      }
+      if ($stream == \*STDIN) {
+        $keys .= $chunk;
+        for my $key (split //, Encode::decode("UTF-8", $keys, Encode::FB_QUIET)) {
+          if (defined $input) {
+            if ($key eq "\n" || $key eq "\r") {
+              submit_command();
+            } elsif ($key eq "\e") {
+              undef $input;
+              print {$terminal} "\r\e[K";
+            } elsif ($key eq "\x7f" || $key eq "\b") {
+              chop $input;
+              prompt();
+            } elsif ($key !~ /[[:cntrl:]]/) {
+              $input .= $key;
+              prompt();
+            }
+          } elsif ($key eq "f" || $key eq "q") {
+            $input = $key eq "f" ? "f " : "q";
+            prompt();
+          }
+        }
+        next;
+      }
+
+      $buffer .= $chunk;
+      my @visible;
+      while ($buffer =~ s/\A([^\n]*\n)//) {
+        my $line = Encode::decode("UTF-8", $1);
+        push @history, $line if $redraw;
+        push @visible, $line if visible($line);
+      }
+      if (@visible) {
+        print "\r\e[K" if $redraw && defined $input;
+        print @visible;
+        prompt() if $redraw && defined $input;
+      }
     }
   }
-  show_log(Encode::decode("UTF-8", $buffer)) if length $buffer;
+  print {$terminal} "\r\e[K" if defined $input;
+  my $last_line = Encode::decode("UTF-8", $buffer);
+  print $last_line if length($last_line) && visible($last_line);
   close $logs;
   exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
-' -- "$rules" "$redraw" "$adb" "${log_args[@]}" </dev/null &
+' -- "$package" "$adb" "$selected" "${log_args[@]:2}" <&0 &
 log_pid=$!
-
-quoted_word='^-w[[:blank:]]+"([^"]+)"[[:blank:]]*$'
-plain_word='^-w[[:blank:]]+([^[:blank:]"]+)[[:blank:]]*$'
-while kill -0 "$log_pid" 2>/dev/null; do
-  IFS= read -rsn 1 -t 1 key || continue
-  case $key in
-    f)
-      IFS= read -er -p 'f ' input || continue
-      input="${input#"${input%%[![:blank:]]*}"}"
-      if [[ $input =~ $quoted_word || $input =~ $plain_word ]]; then
-        word="${BASH_REMATCH[1]}"
-        printf '%s\n' "$word" >> "$rules"
-      elif [[ $input =~ ^-c[[:blank:]]*$ ]]; then
-        : > "$rules"
-      else
-        printf '%s\n' '用法 f -w "关键词" 或 f -c'
-      fi
-      ;;
-    q)
-      "$adb" -s "$selected" shell am force-stop --user current "$package" || fail "无法退出 $package"
-      exit 0
-      ;;
-  esac
-done
-
 wait "$log_pid"
 log_status=$?
 log_pid=''
