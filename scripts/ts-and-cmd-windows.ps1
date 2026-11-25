@@ -5,7 +5,7 @@ function Show-Usage {
     Write-Host '用法 ts-and-cmd run [--debug] [-d 设备序列号]'
     Write-Host '     ts-and-cmd build <apk|appbundle> [--debug]'
     Write-Host '默认构建 Release，选择 adb devices 中第一台可用设备。'
-    Write-Host '启动后持续输出应用日志。按 f 过滤日志，按 q 退出 App，按 Ctrl+C 仅停止查看。'
+    Write-Host '启动后持续输出应用日志。按 f 过滤日志，按 q 退出 App。'
 }
 
 function Stop-InvalidArguments($Message) {
@@ -106,12 +106,16 @@ function Get-AppLogFilter($Adb, $Serial, $Package) {
     return "--pid=$appPid"
 }
 
-function Show-LogLine($Line, $Words) {
+function Show-LogLine($Line, $Words, $Prompt = $null) {
     $text = $Line -creplace '^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+[VDIWEFA]\s+', ''
     foreach ($word in $Words) {
         if ($text.Contains($word)) { return }
     }
+    if ($null -ne $Prompt) {
+        [Console]::Write([char]13 + (' ' * $Prompt.Length) + [char]13)
+    }
     [Console]::WriteLine($Line)
+    if ($null -ne $Prompt) { [Console]::Write($Prompt) }
 }
 
 if ($args.Count -ge 1 -and $args[0] -ceq '--version') {
@@ -220,9 +224,9 @@ try {
 $logArgs = @('-s', $serial, 'logcat', '-v', 'threadtime', '-T', $logStart, $filter)
 $interactive = ![Console]::IsInputRedirected
 if ($interactive) {
-    Write-Host "正在输出 $package 的日志。按 f 过滤日志，按 q 退出 App，按 Ctrl+C 仅停止查看。"
+    Write-Host "正在输出 $package 的日志。按 f 过滤日志，按 q 退出 App。"
 } else {
-    Write-Host "正在输出 $package 的日志，按 Ctrl+C 停止查看。"
+    Write-Host "正在输出 $package 的日志。"
 }
 
 $logProcess = $null
@@ -245,7 +249,7 @@ try {
             $key = [Console]::ReadKey($true).KeyChar
             if ($key -eq [char]3) { exit 130 }
             if ($null -ne $filterInput) {
-                if ($key -eq [char]13) {
+                if ($key -eq [char]13 -or $key -eq [char]10) {
                     Write-Host ''
                     $inputText = $filterInput.Trim()
                     $filterInput = $null
@@ -289,7 +293,7 @@ try {
                 exit 0
             }
         }
-        if ($null -ne $filterInput -or !$pending.IsCompleted) {
+        if (!$pending.IsCompleted) {
             Start-Sleep -Milliseconds 100
             continue
         }
@@ -297,7 +301,9 @@ try {
         if ($null -eq $line) { break }
         $pending = $logProcess.StandardOutput.ReadLineAsync()
         if ($redraw) { $history.Add($line) }
-        Show-LogLine $line $words
+        $prompt = $null
+        if ($redraw -and $null -ne $filterInput) { $prompt = "f $filterInput" }
+        Show-LogLine $line $words $prompt
     }
     $logProcess.WaitForExit()
     exit $logProcess.ExitCode

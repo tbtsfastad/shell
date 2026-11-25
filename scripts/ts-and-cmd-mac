@@ -7,7 +7,7 @@ usage() {
   printf '%s\n' '用法 ts-and-cmd run [--debug] [-d 设备序列号]' \
     '     ts-and-cmd build <apk|appbundle> [--debug]' \
     '默认构建 Release，选择 adb devices 中第一台可用设备。' \
-    '启动后持续输出应用日志。按 f 过滤日志，按 q 退出 App，按 Ctrl+C 仅停止查看。'
+    '启动后持续输出应用日志。按 f 过滤日志，按 q 退出 App。'
 }
 
 fail() {
@@ -238,11 +238,11 @@ filter=$(app_log_filter "$package") || exit 1
 if [[ $log_start =~ ^[0-9]+$ ]]; then log_start="${log_start}.000"; else log_start=1; fi
 log_args=(-s "$selected" logcat -v threadtime -T "$log_start" "$filter")
 if [[ ! -t 0 ]] || ! terminal_state=$(/bin/stty -g 2>/dev/null); then
-  printf '正在输出 %s 的日志，按 Ctrl+C 停止查看。\n' "$package"
+  printf '正在输出 %s 的日志。\n' "$package"
   exec "$adb" "${log_args[@]}"
 fi
 
-printf '正在输出 %s 的日志。按 f 过滤日志，按 q 退出 App，按 Ctrl+C 仅停止查看。\n' "$package"
+printf '正在输出 %s 的日志。按 f 过滤日志，按 q 退出 App。\n' "$package"
 rules=$(mktemp) || fail '无法创建日志过滤文件'
 log_pid=''
 trap '
