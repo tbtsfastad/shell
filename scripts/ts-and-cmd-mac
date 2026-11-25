@@ -220,13 +220,55 @@ start_app "$package"
 filter=$(app_log_filter "$package") || exit 1
 if [[ $log_start =~ ^[0-9]+$ ]]; then log_start="${log_start}.000"; else log_start=1; fi
 log_args=(-s "$selected" logcat -v threadtime -T "$log_start" "$filter")
+log_width=0
+if [[ -t 1 ]]; then
+  read -r _ log_width < <(/bin/stty size 2>/dev/null </dev/tty) || log_width=0
+fi
+log_reader=(/usr/bin/perl -CSD -e '
+  my $width = shift;
+  $| = 1;
+  my $pid = open my $logs, "-|", @ARGV;
+  defined $pid or die "logcat: $!\n";
+  my ($first, $last, $count);
+  sub show {
+    return unless defined $first;
+    my ($preview) = @_;
+    my $text = "[$count] $first";
+    if ($width > 1) {
+      print "\r\e[K";
+      if ($preview) {
+        my $limit = $text =~ /[^\x00-\x7f]/ ? int(($width - 1) / 2) : $width - 1;
+        print substr($text, 0, $limit);
+        return;
+      }
+    }
+    print "$text\n";
+  }
+  for my $signal (qw(INT TERM HUP)) {
+    $SIG{$signal} = sub { show(0); kill "TERM", $pid; close $logs; exit 130; };
+  }
+  while (my $line = <$logs>) {
+    $line =~ s/\r?\n$//;
+    my ($key) = $line =~ /^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+([VDIWEFA]\s+.*)$/;
+    if (!defined $key || !defined $last || $key ne $last) {
+      show(0);
+      if (!defined $key) { print "$line\n"; undef $first; undef $last; next; }
+      ($first, $last, $count) = ($line, $key, 0);
+    }
+    ++$count;
+    show(1) if $width > 1;
+  }
+  show(0);
+  close $logs;
+  exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
+' -- "$log_width" "$adb" "${log_args[@]}")
 if [[ ! -t 0 ]] || ! terminal_state=$(/bin/stty -g 2>/dev/null); then
   printf '正在输出 %s 的日志，按 Ctrl+C 停止查看。\n' "$package"
-  exec "$adb" "${log_args[@]}"
+  exec "${log_reader[@]}"
 fi
 
 printf '正在输出 %s 的日志。按 q 退出 App，按 Ctrl+C 仅停止查看。\n' "$package"
-"$adb" "${log_args[@]}" </dev/null &
+"${log_reader[@]}" </dev/null &
 log_pid=$!
 trap '
   /bin/stty "$terminal_state" 2>/dev/null

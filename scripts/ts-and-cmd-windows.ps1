@@ -200,37 +200,75 @@ try {
 }
 
 $logArgs = @('-s', $serial, 'logcat', '-v', 'threadtime', '-T', $logStart, $filter)
-if ([Console]::IsInputRedirected) {
+$interactive = ![Console]::IsInputRedirected
+$logWidth = if ([Console]::IsOutputRedirected) { 0 } else { [Console]::WindowWidth }
+if ($interactive) {
+    Write-Host "正在输出 $package 的日志。按 q 退出 App，按 Ctrl+C 仅停止查看。"
+} else {
     Write-Host "正在输出 $package 的日志，按 Ctrl+C 停止查看。"
-    & $adb @logArgs
-    exit $LASTEXITCODE
 }
 
-Write-Host "正在输出 $package 的日志。按 q 退出 App，按 Ctrl+C 仅停止查看。"
 $logProcess = $null
-$controlCMode = [Console]::TreatControlCAsInput
+$first = $null
+$lastKey = $null
+$repeat = 0
+if ($interactive) { $controlCMode = [Console]::TreatControlCAsInput }
 try {
-    [Console]::TreatControlCAsInput = $true
-    $logProcess = Start-Process -FilePath $adb -ArgumentList $logArgs -NoNewWindow -PassThru
-    while (!$logProcess.HasExited) {
-        if (![Console]::KeyAvailable) {
+    if ($interactive) { [Console]::TreatControlCAsInput = $true }
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $adb
+    $startInfo.Arguments = $logArgs -join ' '
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $logProcess = [System.Diagnostics.Process]::Start($startInfo)
+    $pending = $logProcess.StandardOutput.ReadLineAsync()
+    while ($true) {
+        if ($interactive -and [Console]::KeyAvailable) {
+            $key = [Console]::ReadKey($true).KeyChar
+            if ($key -eq [char]3) { exit 130 }
+            if ($key -ceq 'q') {
+                & $adb -s $serial shell am force-stop --user current $package
+                if ($LASTEXITCODE -ne 0) { throw "无法退出 $package" }
+                exit 0
+            }
+        }
+        if (!$pending.IsCompleted) {
             Start-Sleep -Milliseconds 100
             continue
         }
-        $key = [Console]::ReadKey($true).KeyChar
-        if ($key -eq [char]3) { exit 130 }
-        if ($key -ceq 'q') {
-            & $adb -s $serial shell am force-stop --user current $package
-            if ($LASTEXITCODE -ne 0) { throw "无法退出 $package" }
-            exit 0
+        $line = $pending.GetAwaiter().GetResult()
+        if ($null -eq $line) { break }
+        $pending = $logProcess.StandardOutput.ReadLineAsync()
+        $logKey = if ($line -cmatch '^\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+\s+\d+\s+\d+\s+([VDIWEFA]\s+.*)$') { $Matches[1] } else { $null }
+        if ($null -eq $logKey -or $logKey -cne $lastKey) {
+            if ($null -ne $first) {
+                if ($logWidth -gt 1) { [Console]::Write("`r") }
+                [Console]::WriteLine("[$repeat] $first")
+            }
+            $first = $null
+            $lastKey = $logKey
+            if ($null -eq $logKey) { [Console]::WriteLine($line); continue }
+            $first = $line
+            $repeat = 0
+        }
+        $repeat++
+        if ($logWidth -gt 1) {
+            $preview = "[$repeat] $first"
+            $limit = if ($preview -match '[^\x00-\x7f]') { [int][Math]::Floor(($logWidth - 1) / 2) } else { $logWidth - 1 }
+            [Console]::Write("`r" + $preview.Substring(0, [Math]::Min($limit, $preview.Length)))
         }
     }
+    $logProcess.WaitForExit()
     exit $logProcess.ExitCode
 } catch {
     [Console]::Error.WriteLine("ts-and-cmd run: $($_.Exception.Message)")
     exit 1
 } finally {
-    [Console]::TreatControlCAsInput = $controlCMode
+    if ($interactive) { [Console]::TreatControlCAsInput = $controlCMode }
+    if ($null -ne $first) {
+        if ($logWidth -gt 1) { [Console]::Write("`r") }
+        [Console]::WriteLine("[$repeat] $first")
+    }
     if ($logProcess) {
         if (!$logProcess.HasExited) { Stop-Process -InputObject $logProcess -ErrorAction SilentlyContinue }
         $logProcess.Dispose()
